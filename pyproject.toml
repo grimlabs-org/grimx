@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grim"
+version = "0.1.0"
+description = "GNU Runtime & Installation Manager — minimal tooling for C and C++ projects"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "tomlkit>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+grim = "grim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["grim*"]
+
+[tool.setuptools.package-data]
+grim = ["templates/**/*"]
