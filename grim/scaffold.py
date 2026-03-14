@@ -211,7 +211,7 @@ def _write_gitignore(dest: Path) -> None:
         ".DS_Store\n"
         "Thumbs.db\n\n"
         "# GRIM\n"
-        "grim.lock\n"
+        "grim.lock\n\n"
     )
 
 

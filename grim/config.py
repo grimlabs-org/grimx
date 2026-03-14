@@ -45,7 +45,9 @@ def write_config(data: dict[str, Any], root: Path | None = None) -> None:
 def load_lock(root: Path | None = None) -> dict[str, Any]:
     path = _resolve(root, LOCK_FILE)
     if not path.exists():
-        return {"dependencies": {}}
+        doc = tomlkit.document()
+        doc["dependencies"] = tomlkit.table()
+        return doc
     return tomlkit.loads(path.read_text())
 
 
@@ -61,7 +63,15 @@ def add_dependency(
     root: Path | None = None,
 ) -> None:
     lock = load_lock(root)
-    lock["dependencies"][name] = {"manager": manager, "version": version}
+
+    if "dependencies" not in lock:
+        lock["dependencies"] = tomlkit.table()
+
+    entry = tomlkit.inline_table()
+    entry.append("manager", manager)
+    entry.append("version", version)
+
+    lock["dependencies"][name] = entry
     write_lock(lock, root)
 
 

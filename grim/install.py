@@ -6,6 +6,7 @@ Offers to auto-install missing package managers.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import subprocess
@@ -46,7 +47,7 @@ def _install_package(package: str) -> None:
         raise SystemExit(1)
 
     for manager in priority:
-        if not shutil.which(manager):
+        if not _is_manager_available(manager):
             if not _prompt_and_install_manager(manager):
                 continue
 
@@ -56,6 +57,9 @@ def _install_package(package: str) -> None:
             add_dependency(package, manager, version)
             click.echo(f"  ✓ installed {package}=={version} via {manager}")
             click.echo(f"  ✓ grim.lock updated")
+            if manager == "vcpkg":
+                _sync_vcpkg_manifest()
+                click.echo(f"  ✓ vcpkg.json updated")
             return
 
     click.echo(
@@ -75,20 +79,35 @@ def _restore_from_lock() -> None:
         return
 
     click.echo(f"Restoring {len(deps)} dependencies from grim.lock...")
+
+    # Group by manager
+    vcpkg_deps = {k: v for k, v in deps.items() if v["manager"] == "vcpkg"}
+    conan_deps = {k: v for k, v in deps.items() if v["manager"] == "conan"}
+
     failed = []
 
-    for name, meta in deps.items():
-        manager = meta["manager"]
-        version = meta["version"]
+    if vcpkg_deps:
+        if not _is_manager_available("vcpkg"):
+            if not _prompt_and_install_manager("vcpkg"):
+                failed.extend(vcpkg_deps.keys())
+                vcpkg_deps = {}
 
-        if not shutil.which(manager):
-            if not _prompt_and_install_manager(manager):
-                click.echo(f"  ✗ {name} — skipped ({manager} unavailable)", err=True)
+        if vcpkg_deps:
+            if _restore_vcpkg(vcpkg_deps):
+                for name in vcpkg_deps:
+                    click.echo(f"  ✓ {name}")
+            else:
+                failed.extend(vcpkg_deps.keys())
+
+    for name, meta in conan_deps.items():
+        if not _is_manager_available("conan"):
+            if not _prompt_and_install_manager("conan"):
+                click.echo(f"  ✗ {name} — skipped (conan unavailable)", err=True)
                 failed.append(name)
                 continue
 
-        click.echo(f"  installing {name}=={version} via {manager}...")
-        ok, _ = _try_install(manager, f"{name}/{version}")
+        click.echo(f"  installing {name}=={meta['version']} via conan...")
+        ok, _ = _try_install("conan", name)
         if ok:
             click.echo(f"  ✓ {name}")
         else:
@@ -100,6 +119,74 @@ def _restore_from_lock() -> None:
         raise SystemExit(1)
 
     click.echo(f"\n✓ all dependencies restored")
+
+
+def _restore_vcpkg(deps: dict) -> bool:
+    """Restore vcpkg deps via vcpkg.json manifest for version pinning."""
+    if not _sync_vcpkg_manifest():
+        return False
+
+    click.echo(f"  generated vcpkg.json with {len(deps)} package(s)")
+
+    result = subprocess.run([_vcpkg_bin(), "install"], text=True)
+
+    if result.returncode != 0:
+        click.echo("  error: vcpkg install failed.", err=True)
+        return False
+
+    click.echo("  ✓ all vcpkg dependencies restored")
+    return True
+
+
+def _sync_vcpkg_manifest() -> bool:
+    """Generate vcpkg.json from current grim.lock state."""
+    lock = load_lock()
+    deps = {k: v for k, v in lock.get("dependencies", {}).items() if v["manager"] == "vcpkg"}
+
+    if not deps:
+        return True
+
+    baseline_result = subprocess.run(
+        ["git", "-C", str(Path.home() / ".vcpkg"), "rev-parse", "HEAD"],
+        capture_output=True, text=True,
+    )
+    if baseline_result.returncode != 0:
+        click.echo("  error: could not get vcpkg baseline.", err=True)
+        return False
+
+    baseline = baseline_result.stdout.strip()
+
+    manifest = {
+        "name": "grim-project",
+        "version": "0.1.0",
+        "builtin-baseline": baseline,
+        "dependencies": [
+            {"name": name, "version>=": meta["version"]}
+            if meta["version"] != "unknown"
+            else name
+            for name, meta in deps.items()
+        ]
+    }
+
+    manifest_path = Path.cwd() / "vcpkg.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Manager availability
+# ---------------------------------------------------------------------------
+
+def _is_manager_available(manager: str) -> bool:
+    """Check if a package manager is available via PATH or known install location."""
+    if manager == "vcpkg":
+        return bool(shutil.which("vcpkg")) or (Path.home() / ".vcpkg" / "vcpkg").exists()
+    return bool(shutil.which(manager))
+
+
+def _vcpkg_bin() -> str:
+    """Return vcpkg binary — from PATH or known install location."""
+    return shutil.which("vcpkg") or str(Path.home() / ".vcpkg" / "vcpkg")
 
 
 # ---------------------------------------------------------------------------
@@ -130,11 +217,11 @@ def _prompt_and_install_manager(manager: str) -> bool:
 
     success = installers[manager]()
 
-    if success and shutil.which(manager):
+    if success and _is_manager_available(manager):
         return True
 
     click.echo(
-        f"\n  '{manager}' still not found in PATH after install.\n"
+        f"\n  '{manager}' still not found after install.\n"
         f"  You may need to open a new terminal or add it to PATH manually.",
         err=True,
     )
@@ -145,6 +232,18 @@ def _auto_install_vcpkg() -> bool:
     """Clone and bootstrap vcpkg into ~/.vcpkg and add to session PATH."""
     vcpkg_dir = Path.home() / ".vcpkg"
 
+    # Already fully installed
+    if vcpkg_dir.exists() and (vcpkg_dir / "vcpkg").exists():
+        click.echo("  vcpkg binary found, skipping clone and bootstrap.")
+        os.environ["PATH"] = str(vcpkg_dir) + os.pathsep + os.environ.get("PATH", "")
+        return True
+
+    # Stale/incomplete clone
+    if vcpkg_dir.exists() and not (vcpkg_dir / "vcpkg").exists():
+        click.echo("  ~/.vcpkg exists but vcpkg binary is missing. Removing and re-cloning...")
+        shutil.rmtree(vcpkg_dir)
+
+    # Fresh clone
     if not vcpkg_dir.exists():
         click.echo("  Cloning vcpkg into ~/.vcpkg ...")
         result = subprocess.run(
@@ -156,22 +255,49 @@ def _auto_install_vcpkg() -> bool:
 
     click.echo("  Bootstrapping vcpkg...")
     if platform.system() == "Windows":
-        bootstrap = str(vcpkg_dir / "bootstrap-vcpkg.bat")
+        bootstrap = vcpkg_dir / "bootstrap-vcpkg.bat"
+        cmd = [str(bootstrap), "-disableMetrics"]
     else:
-        bootstrap = str(vcpkg_dir / "bootstrap-vcpkg.sh")
+        bootstrap = vcpkg_dir / "bootstrap-vcpkg.sh"
+        cmd = ["bash", str(bootstrap), "-disableMetrics"]
 
-    result = subprocess.run([bootstrap, "-disableMetrics"])
+    if not bootstrap.exists():
+        click.echo(f"  error: bootstrap script not found at {bootstrap}", err=True)
+        click.echo(f"  The clone may have failed silently. Try: rm -rf ~/.vcpkg and retry.", err=True)
+        return False
+
+    if platform.system() != "Windows":
+        bootstrap.chmod(bootstrap.stat().st_mode | 0o111)
+
+    result = subprocess.run(cmd)
     if result.returncode != 0:
         click.echo("  error: bootstrap failed.", err=True)
         return False
 
-    # Inject into PATH for the current process
+    _persist_to_path(vcpkg_dir)
     os.environ["PATH"] = str(vcpkg_dir) + os.pathsep + os.environ.get("PATH", "")
 
     click.echo(f"  ✓ vcpkg installed at {vcpkg_dir}")
-    click.echo(f"  To make this permanent, add to your shell profile:")
-    click.echo(f'    export PATH="$HOME/.vcpkg:$PATH"')
     return True
+
+
+def _persist_to_path(directory: Path) -> None:
+    """Append directory to PATH in the user's shell profile."""
+    export_line = f'export PATH="{directory}:$PATH"'
+
+    shell = os.environ.get("SHELL", "")
+    if "zsh" in shell:
+        profile = Path.home() / ".zshrc"
+    else:
+        profile = Path.home() / ".bashrc"
+
+    if profile.exists() and export_line in profile.read_text():
+        return
+
+    with profile.open("a") as f:
+        f.write(f"\n# Added by grim\n{export_line}\n")
+
+    click.echo(f"  ✓ added to {profile} — run 'source {profile}' or open a new terminal")
 
 
 def _auto_install_conan() -> bool:
@@ -184,12 +310,10 @@ def _auto_install_conan() -> bool:
         click.echo("  ✓ conan installed")
         return True
 
-    # pip may be blocked on system-managed Pythons (PEP 668) — try pipx
     if shutil.which("pipx"):
         click.echo("  pip blocked — trying pipx...")
         result = subprocess.run(["pipx", "install", "conan"])
         if result.returncode == 0:
-            # pipx installs into ~/.local/bin — ensure it's on PATH
             local_bin = str(Path.home() / ".local" / "bin")
             os.environ["PATH"] = local_bin + os.pathsep + os.environ.get("PATH", "")
             click.echo("  ✓ conan installed via pipx")
@@ -214,11 +338,17 @@ def _try_install(manager: str, package: str) -> tuple[bool, str]:
 
 def _vcpkg_install(package: str) -> tuple[bool, str]:
     result = subprocess.run(
-        ["vcpkg", "install", package],
+        [_vcpkg_bin(), "install", package],
         capture_output=True, text=True,
     )
+    if result.stdout:
+        click.echo(result.stdout, nl=False)
+    if result.stderr:
+        click.echo(result.stderr, nl=False)
+
     if result.returncode == 0:
-        return True, _parse_vcpkg_version(result.stdout, package)
+        combined = result.stdout + result.stderr
+        return True, _parse_vcpkg_version(combined, package)
     return False, ""
 
 
@@ -233,12 +363,10 @@ def _conan_install(package: str) -> tuple[bool, str]:
 
 
 def _parse_vcpkg_version(output: str, package: str) -> str:
+    """Parse version from vcpkg output — handles 'fmt:x64-linux@12.1.0' format."""
     for line in output.splitlines():
-        if package.lower() in line.lower() and "version" in line.lower():
-            parts = line.split()
-            for i, p in enumerate(parts):
-                if p.lower() == "version" and i + 1 < len(parts):
-                    return parts[i + 1]
+        if package.lower() in line.lower() and "@" in line:
+            return line.strip().split("@")[-1]
     return "unknown"
 
 
