@@ -1,6 +1,6 @@
 # GRIMX
 
-**GNU Runtime & Installation Manager**
+**GCC Runtime & Installation Manager - Cross Platform**
 
 A minimal developer tool for reproducible C and C++ environments.
 
