@@ -14,8 +14,8 @@ import click
 from grim.config import write_config, write_lock, DEFAULT_CONFIG
 
 TEMPLATE_MAP = {
-    "c":            "c_app",
-    "cpp":          "cpp_app",
+    "c":            "c",
+    "cpp":          "cpp",
     "embedded-c":   "embedded_c",
     "embedded-cpp": "embedded_cpp",
 }
