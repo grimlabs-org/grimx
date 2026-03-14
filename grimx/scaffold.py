@@ -1,5 +1,5 @@
 """
-grim.scaffold
+grimx.scaffold
 Interactive project creation — create-next-app style.
 """
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import click
 
-from grim.config import write_config, write_lock, DEFAULT_CONFIG
+from grimx.config import write_config, write_lock, DEFAULT_CONFIG
 
 TEMPLATE_MAP = {
     "c":            "c",
@@ -124,9 +124,9 @@ def create_project(name: str | None, project_type: str | None) -> None:
     click.echo("  Next steps:")
     click.echo(f"    cd {name}")
     if priority:
-        click.echo(f"    grim install <package>")
-    click.echo(f"    grim build")
-    click.echo(f"    grim run")
+        click.echo(f"    grimx install <package>")
+    click.echo(f"    grimx build")
+    click.echo(f"    grimx run")
     click.echo("")
 
 
@@ -158,9 +158,9 @@ A {lang}{std} project.
 ## Build
 
 ```bash
-grim build
-grim test
-grim run
+grimx build
+grimx test
+grimx run
 ```
 
 ## Dependencies
@@ -168,13 +168,13 @@ grim run
 Install a dependency:
 
 ```bash
-grim install <package>
+grimx install <package>
 ```
 
 Restore from lock file:
 
 ```bash
-grim install
+grimx install
 ```
 
 ## Project Structure
@@ -187,8 +187,8 @@ grim install
   docs/       documentation
   cmake/      cmake modules
   CMakeLists.txt
-  grim.config
-  grim.lock
+  grimx.config
+  grimx.lock
 ```
 """
     (dest / "README.md").write_text(content)
@@ -210,8 +210,8 @@ def _write_gitignore(dest: Path) -> None:
         "# OS\n"
         ".DS_Store\n"
         "Thumbs.db\n\n"
-        "# GRIM\n"
-        "grim.lock\n\n"
+        "# GRIMX\n"
+        "grimx.lock\n\n"
     )
 
 
@@ -233,6 +233,6 @@ def _write_clang_format(dest: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _get_template_path(template_key: str) -> Path:
-    pkg = resources.files("grim") / "templates" / template_key
+    pkg = resources.files("grimx") / "templates" / template_key
     with resources.as_file(pkg) as path:
         return Path(str(path)).resolve()

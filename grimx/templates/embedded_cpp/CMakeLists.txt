@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Toolchain file should be passed via -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain.cmake
-# or configured by GRIM for the target architecture.
+# or configured by GRIMX for the target architecture.
 
 include_directories(include)
 

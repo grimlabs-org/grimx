@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "grim"
+name = "grimx"
 version = "0.2.0"
-description = "GNU Runtime & Installation Manager — minimal tooling for C and C++ projects"
+description = "GCC Runtime & Installation Manager, Cross-platform — minimal tooling for C and C++ projects"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -20,11 +20,11 @@ dev = [
 ]
 
 [project.scripts]
-grim = "grim.cli:main"
+grimx = "grimx.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["grim*"]
+include = ["grimx*"]
 
 [tool.setuptools.package-data]
-grim = ["templates/**/*"]
+grimx = ["templates/**/*"]

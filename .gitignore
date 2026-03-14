@@ -228,7 +228,7 @@ venv/
 .DS_Store
 Thumbs.db
 
-# GRIM generated project artifacts
+# GRIMX generated project artifacts
 */build/
-*/grim.lock
+*/grimx.lock
 

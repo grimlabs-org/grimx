@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# GRIM contributor setup script
-# For end users: pip install grim
+# GRIMX contributor setup script
+# For end users: pip install grimx
 #
-# This script is for contributors working on GRIM itself.
-# It creates a local .venv and installs GRIM in editable mode.
+# This script is for contributors working on GRIMX itself.
+# It creates a local .venv and installs GRIMX in editable mode.
 #
 # Usage:
 #   ./setup.sh          # editable install into .venv
@@ -18,8 +18,8 @@ for arg in "$@"; do
         --help|-h)
             echo "Usage: ./setup.sh"
             echo ""
-            echo "  Sets up a local .venv for contributing to GRIM."
-            echo "  End users should run: pip install grim"
+            echo "  Sets up a local .venv for contributing to GRIMX."
+            echo "  End users should run: pip install grimx"
             exit 0
             ;;
         *)
@@ -55,7 +55,7 @@ fi
 "$VENV/bin/pip" install -e ".[dev]" --quiet
 
 echo ""
-echo "✓ GRIM installed (editable) into $VENV"
+echo "✓ GRIMX installed (editable) into $VENV"
 echo ""
 echo "Activate with:"
 echo "  source $VENV/bin/activate"

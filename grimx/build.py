@@ -1,5 +1,5 @@
 """
-grim.build
+grimx.build
 Orchestrate CMake configure, build, test, and run.
 """
 
@@ -47,7 +47,7 @@ def run_app() -> None:
 
     build_path = _build_path()
     if not build_path.exists():
-        click.echo("error: no build directory found. Run 'grim build' first.", err=True)
+        click.echo("error: no build directory found. Run 'grimx build' first.", err=True)
         raise SystemExit(1)
 
     project_name = Path.cwd().name
@@ -60,7 +60,7 @@ def run_app() -> None:
             if p.is_file() and _is_executable(p)
         ]
         if not candidates:
-            click.echo("error: no binary found in build/. Run 'grim build' first.", err=True)
+            click.echo("error: no binary found in build/. Run 'grimx build' first.", err=True)
             raise SystemExit(1)
         binary = candidates[0]
 
@@ -108,15 +108,15 @@ def _build_path() -> Path:
 
 
 def _guard_project_root() -> None:
-    """Abort with a clear message if not run from a GRIM project directory."""
+    """Abort with a clear message if not run from a GRIMX project directory."""
     cwd = Path.cwd()
     has_cmake = (cwd / "CMakeLists.txt").exists()
-    has_config = (cwd / "grim.config").exists()
+    has_config = (cwd / "grimx.config").exists()
 
     if not has_cmake and not has_config:
         click.echo(
-            "error: no CMakeLists.txt or grim.config found in current directory.\n"
-            "  Run this command from inside a GRIM project.",
+            "error: no CMakeLists.txt or grimx.config found in current directory.\n"
+            "  Run this command from inside a GRIMX project.",
             err=True,
         )
         raise SystemExit(1)
@@ -133,7 +133,7 @@ def _guard_project_root() -> None:
 def _require_tool(name: str) -> None:
     if not shutil.which(name):
         click.echo(f"error: '{name}' not found in PATH.", err=True)
-        click.echo(f"  Install it and re-run, or check 'grim doctor' (coming in v2).")
+        click.echo(f"  Install it and re-run, or check 'grimx doctor' (coming in v2).")
         raise SystemExit(1)
 
 

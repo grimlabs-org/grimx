@@ -1,4 +1,4 @@
-# GRIM
+# GRIMX
 
 **GNU Runtime & Installation Manager**
 
@@ -9,22 +9,22 @@ A minimal developer tool for reproducible C and C++ environments.
 ## Installation
 
 ```bash
-pip install grim
+pip install grimx
 ```
 
-That's it. The `grim` command is now available globally.
+That's it. The `grimx` command is now available globally.
 
 ---
 
 ## Quick Start
 
 ```bash
-grim new hello_world
+grimx new hello_world
 cd hello_world
-grim install fmt
-grim build
-grim test
-grim run
+grimx install fmt
+grimx build
+grimx test
+grimx run
 ```
 
 ---
@@ -33,13 +33,13 @@ grim run
 
 | Command | Description |
 |---|---|
-| `grim new <name>` | Scaffold a new project |
-| `grim new <name> --type c` | Scaffold a C project (default: cpp) |
-| `grim install <pkg>` | Install a dependency |
-| `grim install` | Restore all dependencies from lock file |
-| `grim build` | Build the project via CMake |
-| `grim test` | Run tests via CTest |
-| `grim run` | Run the compiled application |
+| `grimx new <name>` | Scaffold a new project |
+| `grimx new <name> --type c` | Scaffold a C project (default: cpp) |
+| `grimx install <pkg>` | Install a dependency |
+| `grimx install` | Restore all dependencies from lock file |
+| `grimx build` | Build the project via CMake |
+| `grimx test` | Run tests via CTest |
+| `grimx run` | Run the compiled application |
 
 ---
 
@@ -52,8 +52,8 @@ my_project/
   tests/          unit tests
   cmake/          optional cmake modules
   CMakeLists.txt
-  grim.config
-  grim.lock
+  grimx.config
+  grimx.lock
 ```
 
 ---
@@ -61,10 +61,10 @@ my_project/
 ## Project Types
 
 ```bash
-grim new my_app --type c            # C application
-grim new my_app --type cpp          # C++ application (default)
-grim new my_fw  --type embedded-c   # Embedded C
-grim new my_fw  --type embedded-cpp # Embedded C++
+grimx new my_app --type c            # C application
+grimx new my_app --type cpp          # C++ application (default)
+grimx new my_fw  --type embedded-c   # Embedded C
+grimx new my_fw  --type embedded-cpp # Embedded C++
 ```
 
 ---

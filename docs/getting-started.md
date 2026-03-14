@@ -1,1 +1,1 @@
-# Getting Started with GRIM
+# Getting Started with GRIMX

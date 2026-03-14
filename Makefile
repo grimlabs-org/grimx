@@ -1,6 +1,6 @@
 VENV   := .venv
 PYTHON := $(VENV)/bin/python
-GRIM   := $(VENV)/bin/grim
+GRIMX   := $(VENV)/bin/grimx
 
 .DEFAULT_GOAL := help
 
@@ -10,11 +10,11 @@ GRIM   := $(VENV)/bin/grim
 
 .PHONY: help
 help:
-	@echo "GRIM — available targets:"
+	@echo "GRIMX — available targets:"
 	@echo ""
-	@echo "  make install   Create .venv and install GRIM (runtime)"
-	@echo "  make dev       Create .venv and install GRIM + dev dependencies"
-	@echo "  make test      Run GRIM's own test suite"
+	@echo "  make install   Create .venv and install GRIMX (runtime)"
+	@echo "  make dev       Create .venv and install GRIMX + dev dependencies"
+	@echo "  make test      Run GRIMX's own test suite"
 	@echo "  make clean     Remove .venv and build artifacts"
 	@echo ""
 	@echo "Alternatively, use the setup script directly:"

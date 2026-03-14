@@ -1,6 +1,6 @@
 """
-grim.config
-Read and write grim.config and grim.lock using TOML.
+grimx.config
+Read and write grimx.config and grimx.lock using TOML.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from typing import Any
 
 import tomlkit
 
-CONFIG_FILE = "grim.config"
-LOCK_FILE = "grim.lock"
+CONFIG_FILE = "grimx.config"
+LOCK_FILE = "grimx.lock"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "package_manager": {
@@ -26,7 +26,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 def load_config(root: Path | None = None) -> dict[str, Any]:
-    """Load grim.config from root (defaults to cwd)."""
+    """Load grimx.config from root (defaults to cwd)."""
     path = _resolve(root, CONFIG_FILE)
     if not path.exists():
         return dict(DEFAULT_CONFIG)

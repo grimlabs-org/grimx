@@ -1,4 +1,4 @@
-# Contributing to GRIM
+# Contributing to GRIMX
 
 ## Prerequisites
 
@@ -11,11 +11,11 @@
 Clone the repo and run the setup script:
 
 ```bash
-git clone https://github.com/grimlabs/grim
-cd grim
+git clone https://github.com/grimlabs/grimx
+cd grimx
 ./setup.sh
 source .venv/bin/activate
-grim --version
+grimx --version
 ```
 
 Or use the Makefile:
@@ -25,33 +25,33 @@ make dev
 source .venv/bin/activate
 ```
 
-This installs GRIM in editable mode (`pip install -e .`) so changes to the source are reflected immediately without reinstalling.
+This installs GRIMX in editable mode (`pip install -e .`) so changes to the source are reflected immediately without reinstalling.
 
 ## Makefile Targets
 
 ```bash
 make dev      # create .venv and install editable + dev deps
-make test     # run GRIM's test suite
+make test     # run GRIMX's test suite
 make clean    # remove .venv and build artifacts
 ```
 
 ## Repository Structure
 
 ```
-grim/
-  grim/         Python package
+grimx/
+  grimx/         Python package
     cli.py      Entry point and command definitions
-    scaffold.py grim new
-    install.py  grim install
-    build.py    grim build / test / run
-    config.py   grim.config and grim.lock read/write
+    scaffold.py grimx new
+    install.py  grimx install
+    build.py    grimx build / test / run
+    config.py   grimx.config and grimx.lock read/write
   templates/    Project scaffolding templates
     c_app/
     cpp_app/
     embedded_c/
     embedded_cpp/
   docs/
-  tests/        GRIM's own test suite
+  tests/        GRIMX's own test suite
   pyproject.toml
   Makefile
   setup.sh

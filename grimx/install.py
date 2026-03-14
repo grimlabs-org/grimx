@@ -1,5 +1,5 @@
 """
-grim.install
+grimx.install
 Delegate package installation to vcpkg or Conan with fallback logic.
 Offers to auto-install missing package managers.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from grim.config import load_config, load_lock, add_dependency
+from grimx.config import load_config, load_lock, add_dependency
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ def _install_package(package: str) -> None:
     if not priority:
         click.echo(
             "error: no package managers configured.\n"
-            "  Edit grim.config and set priority = [\"vcpkg\"] or [\"conan\"].",
+            "  Edit grimx.config and set priority = [\"vcpkg\"] or [\"conan\"].",
             err=True,
         )
         raise SystemExit(1)
@@ -56,7 +56,7 @@ def _install_package(package: str) -> None:
         if ok:
             add_dependency(package, manager, version)
             click.echo(f"  ✓ installed {package}=={version} via {manager}")
-            click.echo(f"  ✓ grim.lock updated")
+            click.echo(f"  ✓ grimx.lock updated")
             if manager == "vcpkg":
                 _sync_vcpkg_manifest()
                 click.echo(f"  ✓ vcpkg.json updated")
@@ -75,10 +75,10 @@ def _restore_from_lock() -> None:
     deps: dict = lock.get("dependencies", {})
 
     if not deps:
-        click.echo("grim.lock is empty — nothing to install.")
+        click.echo("grimx.lock is empty — nothing to install.")
         return
 
-    click.echo(f"Restoring {len(deps)} dependencies from grim.lock...")
+    click.echo(f"Restoring {len(deps)} dependencies from grimx.lock...")
 
     # Group by manager
     vcpkg_deps = {k: v for k, v in deps.items() if v["manager"] == "vcpkg"}
@@ -139,7 +139,7 @@ def _restore_vcpkg(deps: dict) -> bool:
 
 
 def _sync_vcpkg_manifest() -> bool:
-    """Generate vcpkg.json from current grim.lock state."""
+    """Generate vcpkg.json from current grimx.lock state."""
     lock = load_lock()
     deps = {k: v for k, v in lock.get("dependencies", {}).items() if v["manager"] == "vcpkg"}
 
@@ -157,7 +157,7 @@ def _sync_vcpkg_manifest() -> bool:
     baseline = baseline_result.stdout.strip()
 
     manifest = {
-        "name": "grim-project",
+        "name": "grimx-project",
         "version": "0.1.0",
         "builtin-baseline": baseline,
         "dependencies": [
@@ -295,7 +295,7 @@ def _persist_to_path(directory: Path) -> None:
         return
 
     with profile.open("a") as f:
-        f.write(f"\n# Added by grim\n{export_line}\n")
+        f.write(f"\n# Added by grimx\n{export_line}\n")
 
     click.echo(f"  ✓ added to {profile} — run 'source {profile}' or open a new terminal")
 

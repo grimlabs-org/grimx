@@ -1,16 +1,16 @@
 """
-grim.cli
-Entry point for the GRIM command-line interface
+grimx.cli
+Entry point for the GRIMX command-line interface
 """
 
 import click 
-from grim import __version__
-from grim import scaffold, install as install_mod, build as build_mod 
+from grimx import __version__
+from grimx import scaffold, install as install_mod, build as build_mod 
 
 @click.group()
-@click.version_option(__version__, prog_name="grim")
+@click.version_option(__version__, prog_name="grimx")
 def main():
-    """GRIM - GNU Runtime & Installation Manager.
+    """GRIMX - GNU Runtime & Installation Manager.
     
     Minimal tooling for reproducible C and C++ environments.
     """
@@ -32,7 +32,7 @@ def new(name: str | None, project_type: str | None):
 @main.command("install")
 @click.argument("package", required=False, default=None)
 def install_cmd(package):
-    """Install a dependency, or restore all from grim.lock."""
+    """Install a dependency, or restore all from grimx.lock."""
     install_mod.run(package)
 
 @main.command("build")
