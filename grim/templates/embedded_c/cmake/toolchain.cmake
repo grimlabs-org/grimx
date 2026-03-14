@@ -1,0 +1,8 @@
+# Toolchain file stub — configure for your target.
+# Example for ARM bare-metal:
+#
+# set(CMAKE_SYSTEM_NAME Generic)
+# set(CMAKE_SYSTEM_PROCESSOR arm)
+# set(CMAKE_C_COMPILER   arm-none-eabi-gcc)
+# set(CMAKE_ASM_COMPILER arm-none-eabi-gcc)
+# set(CMAKE_EXE_LINKER_FLAGS "--specs=nosys.specs" CACHE INTERNAL "")
