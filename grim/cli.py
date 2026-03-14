@@ -48,4 +48,4 @@ def test_cmd():
 @main.command("run")
 def run_cmd():
     """Run the compiled application."""
-    build_cmd.run_app()
+    build_mod.run_app()
