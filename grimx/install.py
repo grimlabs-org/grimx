@@ -17,7 +17,7 @@ from pathlib import Path
 import click
 
 from grimx.config import load_config, load_lock, add_dependency
-from grimx.cmake_patch import patch_all_from_lock
+from grimx.cmake_patch import patch_from_vcpkg_output, patch_all_from_lock
 
 
 # ---------------------------------------------------------------------------
@@ -53,17 +53,20 @@ def _install_package(package: str) -> None:
                 continue
 
         click.echo(f"  trying {manager}...")
-        ok, version = _try_install(manager, package)
+        ok, version, vcpkg_output = _try_install(manager, package)
         if ok:
-            # Write lock only after successful install with real version
             add_dependency(package, manager, version)
             click.echo(f"  ✓ installed {package}=={version} via {manager}")
             click.echo(f"  ✓ grimx.lock updated")
             if manager == "vcpkg":
-                # Re-sync vcpkg.json now that the lock has the real version
                 _sync_vcpkg_manifest()
                 click.echo(f"  ✓ vcpkg.json updated")
-            patch_all_from_lock(load_lock(), Path.cwd() / "CMakeLists.txt")
+                # Primary path — parse cmake hints from vcpkg stdout.
+                # vcpkg prints hints for every installed package so this
+                # covers all packages in the manifest in one pass.
+                patch_from_vcpkg_output(vcpkg_output, Path.cwd() / "CMakeLists.txt")
+            else:
+                patch_all_from_lock(load_lock(), Path.cwd() / "CMakeLists.txt")
             return
 
     click.echo(
@@ -96,9 +99,14 @@ def _restore_from_lock() -> None:
                 vcpkg_deps = {}
 
         if vcpkg_deps:
-            if _restore_vcpkg(vcpkg_deps):
+            ok, vcpkg_output = _restore_vcpkg(vcpkg_deps)
+            if ok:
                 for name in vcpkg_deps:
                     click.echo(f"  ✓ {name}")
+                if vcpkg_output:
+                    patch_from_vcpkg_output(vcpkg_output, Path.cwd() / "CMakeLists.txt")
+                else:
+                    patch_all_from_lock(load_lock(), Path.cwd() / "CMakeLists.txt")
             else:
                 failed.extend(vcpkg_deps.keys())
 
@@ -110,7 +118,7 @@ def _restore_from_lock() -> None:
                 continue
 
         click.echo(f"  installing {name}=={meta['version']} via conan...")
-        ok, _ = _try_install("conan", name)
+        ok, _, _ = _try_install("conan", name)
         if ok:
             click.echo(f"  ✓ {name}")
         else:
@@ -121,36 +129,40 @@ def _restore_from_lock() -> None:
         click.echo(f"\n{len(failed)} package(s) failed: {', '.join(failed)}", err=True)
         raise SystemExit(1)
 
-    patch_all_from_lock(load_lock(), Path.cwd() / "CMakeLists.txt")
+    if conan_deps:
+        patch_all_from_lock(load_lock(), Path.cwd() / "CMakeLists.txt")
+
     click.echo(f"\n✓ all dependencies restored")
 
 
-def _restore_vcpkg(deps: dict) -> bool:
-    """Restore all vcpkg deps from grimx.lock via manifest mode."""
+def _restore_vcpkg(deps: dict) -> tuple[bool, str]:
+    """Restore all vcpkg deps. Returns (success, vcpkg_output)."""
     if not _sync_vcpkg_manifest():
-        return False
+        return False, ""
 
     click.echo(f"  generated vcpkg.json with {len(deps)} package(s)")
 
     install_root = Path.cwd() / "vcpkg_installed"
     result = subprocess.run(
         [_vcpkg_bin(), "install", f"--x-install-root={install_root}"],
-        text=True,
+        capture_output=True, text=True,
     )
+
+    if result.stdout:
+        click.echo(result.stdout, nl=False)
+    if result.stderr:
+        click.echo(result.stderr, nl=False)
 
     if result.returncode != 0:
         click.echo("  error: vcpkg install failed.", err=True)
-        return False
+        return False, ""
 
     click.echo("  ✓ all vcpkg dependencies restored")
-    return True
+    return True, result.stdout + result.stderr
 
 
 def _sync_vcpkg_manifest() -> bool:
-    """
-    Write vcpkg.json from the current grimx.lock state.
-    Used after a successful install (real version known) and on restore.
-    """
+    """Write vcpkg.json from current grimx.lock state."""
     lock = load_lock()
     deps = {
         k: v for k, v in lock.get("dependencies", {}).items()
@@ -188,14 +200,8 @@ def _sync_vcpkg_manifest() -> bool:
 
 def _write_vcpkg_manifest_with(new_package: str) -> bool:
     """
-    Write vcpkg.json containing all packages currently in grimx.lock
-    PLUS the new package being installed right now.
-
-    Called before vcpkg install so that:
-    - vcpkg runs in manifest mode (not classic mode)
-    - vcpkg_installed/ is populated in the project directory
-    - The new package is included even though it isn't in the lock yet
-      (version is unknown until vcpkg install completes)
+    Write vcpkg.json with all existing lock entries + new package.
+    Called before vcpkg install to ensure manifest mode is active.
     """
     lock = load_lock()
     existing_deps = {
@@ -213,7 +219,6 @@ def _write_vcpkg_manifest_with(new_package: str) -> bool:
 
     baseline = baseline_result.stdout.strip()
 
-    # Build dependency list from existing lock entries with pinned versions
     dependencies: list = [
         {"name": name, "version>=": meta["version"]}
         if meta["version"] != "unknown"
@@ -221,7 +226,6 @@ def _write_vcpkg_manifest_with(new_package: str) -> bool:
         for name, meta in existing_deps.items()
     ]
 
-    # Append new package if not already present
     existing_names = {
         (d["name"] if isinstance(d, dict) else d)
         for d in dependencies
@@ -293,7 +297,6 @@ def _prompt_and_install_manager(manager: str) -> bool:
 
 
 def _auto_install_vcpkg() -> bool:
-    """Clone and bootstrap vcpkg into ~/.vcpkg."""
     vcpkg_dir = Path.home() / ".vcpkg"
 
     if vcpkg_dir.exists() and (vcpkg_dir / "vcpkg").exists():
@@ -336,25 +339,19 @@ def _auto_install_vcpkg() -> bool:
 
     _persist_vcpkg_env(vcpkg_dir)
     os.environ["PATH"] = str(vcpkg_dir) + os.pathsep + os.environ.get("PATH", "")
-
     click.echo(f"  ✓ vcpkg installed at {vcpkg_dir}")
     return True
 
 
 def _persist_vcpkg_env(vcpkg_dir: Path) -> None:
-    """Write PATH export to shell profile. No VCPKG_ROOT — grimx uses local manifest mode."""
     export_line = f'export PATH="{vcpkg_dir}:$PATH"'
-
-    shell = os.environ.get("SHELL", "")
+    shell   = os.environ.get("SHELL", "")
     profile = Path.home() / (".zshrc" if "zsh" in shell else ".bashrc")
-
     existing = profile.read_text() if profile.exists() else ""
     if export_line in existing:
         return
-
     with profile.open("a") as f:
         f.write(f"\n# Added by grimx\n{export_line}\n")
-
     click.echo(f"  ✓ added to {profile} — run 'source {profile}' or open a new terminal")
 
 
@@ -385,33 +382,24 @@ def _auto_install_conan() -> bool:
 # Package manager wrappers
 # ---------------------------------------------------------------------------
 
-def _try_install(manager: str, package: str) -> tuple[bool, str]:
+def _try_install(manager: str, package: str) -> tuple[bool, str, str]:
+    """Returns (success, version, raw_output)."""
     if manager == "vcpkg":
         return _vcpkg_install(package)
     if manager == "conan":
-        return _conan_install(package)
-    return False, ""
+        ok, version = _conan_install(package)
+        return ok, version, ""
+    return False, "", ""
 
 
-def _vcpkg_install(package: str) -> tuple[bool, str]:
+def _vcpkg_install(package: str) -> tuple[bool, str, str]:
     """
-    Install a package via vcpkg using manifest mode exclusively.
-
-    Flow:
-    1. _write_vcpkg_manifest_with(package) — writes vcpkg.json with all
-       existing lock entries PLUS the new package (no version yet).
-       This ensures vcpkg runs in manifest mode and --x-install-root
-       populates vcpkg_installed/ in the project directory.
-
-    2. vcpkg install --x-install-root=./vcpkg_installed — always copies
-       packages into the local project tree regardless of binary cache
-       or prior global installs.
-
-    3. Return (True, version) — caller writes the lock and re-syncs
-       vcpkg.json with the real version constraint.
+    Install via vcpkg manifest mode.
+    Returns (success, version, combined_output).
+    combined_output is parsed by patch_from_vcpkg_output for cmake hints.
     """
     if not _write_vcpkg_manifest_with(package):
-        return False, ""
+        return False, "", ""
 
     install_root = Path.cwd() / "vcpkg_installed"
 
@@ -425,10 +413,11 @@ def _vcpkg_install(package: str) -> tuple[bool, str]:
     if result.stderr:
         click.echo(result.stderr, nl=False)
 
-    if result.returncode == 0:
-        combined = result.stdout + result.stderr
-        return True, _parse_vcpkg_version(combined, package)
-    return False, ""
+    if result.returncode != 0:
+        return False, "", ""
+
+    combined = result.stdout + result.stderr
+    return True, _parse_vcpkg_version(combined, package), combined
 
 
 def _conan_install(package: str) -> tuple[bool, str]:
