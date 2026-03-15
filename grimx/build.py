@@ -86,6 +86,7 @@ def _cmake_configure() -> None:
         f"-B{build_path}",
         "-DCMAKE_BUILD_TYPE=Debug",
         f"-DVCPKG_INSTALLED_DIR={project_root/ 'vcpkg_installed'}",
+        "-DVCPKG_MANIFEST_INSTALL=OFF", # stop toolchain triggering vcpkg install as grimx handles installs.
     ]
 
     if toolchain:
