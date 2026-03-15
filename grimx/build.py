@@ -85,6 +85,7 @@ def _cmake_configure() -> None:
         str(project_root),
         f"-B{build_path}",
         "-DCMAKE_BUILD_TYPE=Debug",
+        f"-DVCPKG_INSTALLED_DIR={project_root/ 'vcpkg_installed'}",
     ]
 
     if toolchain:
