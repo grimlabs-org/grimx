@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grimx"
-version = "0.4.0"
+version = "0.4.2"
 description = "GCC Runtime & Installation Manager, Cross-platform — minimal tooling for C and C++ projects"
 readme = "README.md"
 license = { file = "LICENSE" }
