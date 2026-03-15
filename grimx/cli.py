@@ -10,7 +10,7 @@ from grimx import scaffold, install as install_mod, build as build_mod
 @click.group()
 @click.version_option(__version__, prog_name="grimx")
 def main():
-    """GRIMX - GNU Runtime & Installation Manager.
+    """GRIMX - GCC Runtime & Installation Manager, Cross-platform.
     
     Minimal tooling for reproducible C and C++ environments.
     """
