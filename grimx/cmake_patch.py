@@ -6,9 +6,9 @@ Assumes manifest mode: vcpkg_installed/ lives in the project root.
 No VCPKG_ROOT dependency.
 
 Three-layer strategy:
-  Layer 1: vcpkg usage file           — authoritative, covers 2000+ ports
-  Layer 2: CMake *Config.cmake scan   — covers everything with CMake support
-  Layer 3: pkg-config .pc scan        — covers Conan and system-style libs
+  Layer 1: vcpkg usage file         — authoritative, covers 2000+ ports
+  Layer 2: CMake *Config.cmake scan — covers everything with CMake support
+  Layer 3: pkg-config .pc scan      — covers Conan and system-style libs
 """
 
 from __future__ import annotations
@@ -29,17 +29,15 @@ class UsageDirectives:
     find_package:    list[str] = field(default_factory=list)
     link_targets:    list[str] = field(default_factory=list)
     find_path_lines: list[str] = field(default_factory=list)
-    include_vars:    list[str] = field(default_factory=list)
-    is_header_only:  bool = False
 
 
 # ---------------------------------------------------------------------------
-# Public entry point — catch-up pass for all lock entries
+# Public entry point
 # ---------------------------------------------------------------------------
 
 def patch_all_from_lock(lock: dict, cmake_path: Path) -> None:
     """
-    Patch CMakeLists.txt for every package currently in grimx.lock.
+    Patch CMakeLists.txt for every package in grimx.lock.
     Called after every successful install.
     """
     if not cmake_path.exists():
@@ -51,58 +49,58 @@ def patch_all_from_lock(lock: dict, cmake_path: Path) -> None:
 
     project_root = cmake_path.parent
     content = cmake_path.read_text()
+
+    # Pre-normalise once — O(1) per subsequent presence check
+    normalised = _normalise(content)
+
     any_changed = False
 
     for package in deps:
-        directives, source = _resolve_directives(package, project_root)
+        directives = _resolve_directives(package, project_root)
         if directives is None:
             continue
-        content, changed = _apply_directives(content, directives, source, silent=True)
+        content, normalised, changed = _apply_directives(
+            content, normalised, directives
+        )
         if changed:
-            click.echo(f"  [cmake] patched '{package}' (source: {source})")
+            click.echo(f"  [cmake] patched '{package}'")
             any_changed = True
 
     if any_changed:
         _atomic_write(cmake_path, content)
-        click.echo(f"  [cmake] ✓ CMakeLists.txt updated.")
+        click.echo("  [cmake] ✓ CMakeLists.txt updated.")
     else:
-        click.echo(f"  [cmake] CMakeLists.txt already up to date.")
+        click.echo("  [cmake] CMakeLists.txt already up to date.")
 
 
 # ---------------------------------------------------------------------------
-# Internal — apply directives to content string
+# Apply directives
 # ---------------------------------------------------------------------------
 
 def _apply_directives(
     content: str,
+    normalised: str,
     directives: UsageDirectives,
-    source: str,
-    silent: bool = False,
-) -> tuple[str, bool]:
+) -> tuple[str, str, bool]:
+    """
+    Apply directives to content. Returns (new_content, new_normalised, changed).
+    Keeps normalised in sync so subsequent checks in the same pass stay O(1).
+    """
     changed = False
 
-    for fp_line in directives.find_package:
-        if not _already_present(content, fp_line):
-            content = _inject_find_package(content, fp_line)
-            if not silent:
-                click.echo(f"  [cmake] + {fp_line}")
-            changed = True
-
-    for fp_line in directives.find_path_lines:
-        if not _already_present(content, fp_line):
-            content = _inject_find_package(content, fp_line)
-            if not silent:
-                click.echo(f"  [cmake] + {fp_line}")
+    for line in directives.find_package + directives.find_path_lines:
+        if _normalise(line) not in normalised:
+            content = _inject_find_package(content, line)
+            normalised = _normalise(content)
             changed = True
 
     for target in directives.link_targets:
-        if not _already_present(content, target):
+        if _normalise(target) not in normalised:
             content = _inject_link_target(content, target)
-            if not silent:
-                click.echo(f"  [cmake] + target_link_libraries ... {target}")
+            normalised = _normalise(content)
             changed = True
 
-    return content, changed
+    return content, normalised, changed
 
 
 # ---------------------------------------------------------------------------
@@ -121,131 +119,158 @@ def _atomic_write(cmake_path: Path, content: str) -> None:
 
 def _resolve_directives(
     package: str, project_root: Path
-) -> tuple[UsageDirectives | None, str]:
+) -> UsageDirectives | None:
+    """Single share-dir scan, three layers."""
+    share_dirs = _find_package_share_dirs(package, project_root)
 
     # Layer 1: vcpkg usage file
-    for share_dir in _find_package_share_dirs(package, project_root):
+    for share_dir in share_dirs:
         usage = share_dir / "usage"
         if usage.exists():
-            d = _classify_usage_file(usage.read_text())
+            d = _parse_usage_file(usage.read_text())
             if d.find_package or d.find_path_lines:
-                return d, "vcpkg usage file"
+                return d
 
     # Layer 2: CMake *Config.cmake scan
-    for share_dir in _find_package_share_dirs(package, project_root):
-        result = _extract_from_cmake_config(share_dir)
-        if result:
-            pkg_name, targets = result
-            d = UsageDirectives(
-                find_package=[f"find_package({pkg_name} CONFIG REQUIRED)"],
-                link_targets=targets,
-            )
-            return d, "CMake config file"
+    for share_dir in share_dirs:
+        d = _parse_cmake_config(share_dir)
+        if d:
+            return d
 
     # Layer 3: pkg-config .pc fallback
-    result = _extract_from_pkgconfig(package, project_root)
-    if result:
-        find_lines, link_targets = result
-        d = UsageDirectives(
-            find_package=find_lines,
-            link_targets=link_targets,
-        )
-        return d, "pkg-config"
-
-    return None, ""
+    return _parse_pkgconfig(package, project_root)
 
 
 # ---------------------------------------------------------------------------
-# Share directory discovery — vcpkg_installed/ only, no global paths
+# Share directory discovery
 # ---------------------------------------------------------------------------
 
 def _find_package_share_dirs(package: str, project_root: Path) -> list[Path]:
-    """
-    Find share/<package> dirs inside vcpkg_installed/ in the project root.
-
-    This is the local manifest-mode install tree — equivalent to node_modules/.
-    vcpkg_installed/ is guaranteed to exist after _vcpkg_install runs because
-    install.py always writes vcpkg.json first and runs `vcpkg install` with no
-    arguments, which forces vcpkg to populate the local tree every time.
-    """
-    candidates: list[Path] = []
-
     vcpkg_installed = project_root / "vcpkg_installed"
     if not vcpkg_installed.exists():
-        return candidates
-
-    for triplet_dir in vcpkg_installed.iterdir():
-        if not triplet_dir.is_dir():
-            continue
-        share = triplet_dir / "share" / package
-        if share.exists():
-            candidates.append(share)
-
-    return candidates
+        return []
+    return [
+        t / "share" / package
+        for t in vcpkg_installed.iterdir()
+        if t.is_dir() and (t / "share" / package).exists()
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Layer 1 — vcpkg usage file parser
 # ---------------------------------------------------------------------------
 
-def _classify_usage_file(content: str) -> UsageDirectives:
-    """
-    Line-by-line classifier.
+# Matches the alternative-block marker vcpkg uses in every usage file
+_ALTERNATIVE_RE = re.compile(r'#\s*or\b', re.IGNORECASE)
 
-    Skips alternative/header-only blocks preceded by a comment line
-    (e.g. '# Or use the header-only version') so only the primary
-    compiled target is linked, not both variants.
-    Deduplicates find_package lines — usage files repeat them per variant.
+
+def _parse_usage_file(content: str) -> UsageDirectives:
+    """
+    Parse a vcpkg usage file using explicit signal detection.
+
+    vcpkg usage files have a consistent structure:
+      - Primary block: find_package + target_link_libraries (no preceding comment)
+      - Alternative blocks: preceded by a comment containing "or"
+        e.g. "# Or use the header-only version"
+
+    Strategy:
+      1. Split into blocks on blank lines.
+      2. Mark blocks as alternative if any line matches _ALTERNATIVE_RE.
+      3. Collect find_package from ALL blocks (deduplicated) — the same
+         find_package call is required regardless of which target is used.
+      4. Collect link targets ONLY from non-alternative blocks.
+
+    CMake function calls are parsed with balanced-paren matching so
+    multi-line calls and calls with COMPONENTS work correctly.
     """
     d = UsageDirectives()
-    skip_next_tll = False
+    blocks = re.split(r'\n\s*\n', content.strip())
 
-    for line in content.splitlines():
-        line = line.strip()
+    for block in blocks:
+        lines = block.splitlines()
+        is_alternative = any(_ALTERNATIVE_RE.search(l) for l in lines)
 
-        if not line:
-            # Blank line resets skip — new block starting
-            skip_next_tll = False
-            continue
+        for call in _extract_cmake_calls(block):
+            name = call.split('(')[0].strip().lower()
 
-        if line.startswith("#"):
-            # Comment before target_link_libraries marks it as an alternative
-            skip_next_tll = True
-            continue
+            if name == 'find_package':
+                if call not in d.find_package:
+                    d.find_package.append(call)
 
-        if line.startswith("find_package("):
-            if line not in d.find_package:
-                d.find_package.append(line)
-            skip_next_tll = False
+            elif name == 'find_path':
+                if call not in d.find_path_lines:
+                    d.find_path_lines.append(call)
 
-        elif re.match(r'target_link_libraries\(', line):
-            if not skip_next_tll:
-                targets = re.findall(
-                    r'(?:PRIVATE|PUBLIC|INTERFACE)\s+(.*?)\s*\)',
-                    line,
+            elif name == 'target_link_libraries' and not is_alternative:
+                # Extract targets after PRIVATE/PUBLIC/INTERFACE keyword
+                m = re.search(
+                    r'(?:PRIVATE|PUBLIC|INTERFACE)\s+(.*?)\s*\)\s*$',
+                    call,
+                    re.DOTALL,
                 )
-                if targets:
-                    d.link_targets.extend(targets[0].split())
-            skip_next_tll = False
-
-        elif line.startswith("find_path("):
-            d.find_path_lines.append(line)
-            d.is_header_only = True
-            skip_next_tll = False
-
-        elif line.startswith("target_include_directories("):
-            vars_used = re.findall(r'\$\{(\w+)\}', line)
-            d.include_vars.extend(vars_used)
-            skip_next_tll = False
+                if m:
+                    d.link_targets.extend(m.group(1).split())
 
     return d
+
+
+def _extract_cmake_calls(text: str) -> list[str]:
+    """
+    Extract complete CMake function calls using balanced-paren matching.
+
+    Handles:
+      - Single-line: find_package(fmt CONFIG REQUIRED)
+      - Multi-line:  find_package(Boost REQUIRED
+                         COMPONENTS filesystem system)
+      - Indented calls in usage files
+    """
+    calls = []
+    i = 0
+    text = text.strip()
+
+    # Match the start of a CMake call: word chars followed by '('
+    call_start = re.compile(r'[A-Za-z_]\w*\s*\(')
+
+    while i < len(text):
+        m = call_start.search(text, i)
+        if not m:
+            break
+
+        # Skip if preceded by '#' on the same line (commented out)
+        line_start = text.rfind('\n', 0, m.start()) + 1
+        prefix = text[line_start:m.start()]
+        if '#' in prefix:
+            i = m.end()
+            continue
+
+        # Walk forward counting parens to find the matching close
+        depth = 0
+        j = m.start()
+        while j < len(text):
+            if text[j] == '(':
+                depth += 1
+            elif text[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    # Normalise internal whitespace for clean output
+                    raw = text[m.start():j + 1]
+                    normalised = re.sub(r'\s+', ' ', raw).strip()
+                    calls.append(normalised)
+                    i = j + 1
+                    break
+            j += 1
+        else:
+            # Unmatched paren — skip
+            i = m.end()
+
+    return calls
 
 
 # ---------------------------------------------------------------------------
 # Layer 2 — CMake Config file scan
 # ---------------------------------------------------------------------------
 
-def _extract_from_cmake_config(share_pkg_dir: Path) -> tuple[str, list[str]] | None:
+def _parse_cmake_config(share_pkg_dir: Path) -> UsageDirectives | None:
     config_files = (
         list(share_pkg_dir.glob("*Config.cmake")) +
         list(share_pkg_dir.glob("*-config.cmake"))
@@ -253,113 +278,119 @@ def _extract_from_cmake_config(share_pkg_dir: Path) -> tuple[str, list[str]] | N
     if not config_files:
         return None
 
-    config = config_files[0]
-    content = config.read_text(errors="replace")
+    content = config_files[0].read_text(errors="replace")
+    pkg_name = re.sub(r'(?i)(Config|-config)$', '', config_files[0].stem)
 
-    stem = config.stem
-    pkg_name = re.sub(r'(?i)(Config|-config)$', '', stem)
-
-    targets = re.findall(
+    # Extract namespaced IMPORTED targets — most reliable indicator
+    targets = list(dict.fromkeys(re.findall(
         r'add_library\(([A-Za-z0-9_:]+)\s+(?:STATIC|SHARED|INTERFACE)\s+IMPORTED\)',
         content,
-    )
-    prop_targets = re.findall(
-        r'set_target_properties\(([A-Za-z0-9_:]+)\s+PROPERTIES',
-        content,
-    )
-    all_targets = list(dict.fromkeys(targets + prop_targets))
-    ns_targets = [t for t in all_targets if "::" in t]
-    final_targets = ns_targets if ns_targets else all_targets
+    )))
+    ns_targets = [t for t in targets if "::" in t]
 
-    if not final_targets:
+    if not ns_targets:
         return None
 
-    return pkg_name, final_targets
+    return UsageDirectives(
+        find_package=[f"find_package({pkg_name} CONFIG REQUIRED)"],
+        link_targets=ns_targets,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Layer 3 — pkg-config fallback
 # ---------------------------------------------------------------------------
 
-def _extract_from_pkgconfig(
-    package: str, project_root: Path
-) -> tuple[list[str], list[str]] | None:
+def _parse_pkgconfig(package: str, project_root: Path) -> UsageDirectives | None:
     vcpkg_installed = project_root / "vcpkg_installed"
     if not vcpkg_installed.exists():
         return None
 
-    pc_candidates = (
+    pc_files = (
         list(vcpkg_installed.rglob(f"{package}.pc")) +
         list(vcpkg_installed.rglob(f"lib{package}.pc"))
     )
-
-    if not pc_candidates:
+    if not pc_files:
         return None
 
-    pc_content = pc_candidates[0].read_text(errors="replace")
-    libs_line = re.search(r'^Libs:(.+)$', pc_content, re.MULTILINE)
-    if not libs_line:
+    m = re.search(
+        r'^Libs:(.+)$', pc_files[0].read_text(errors="replace"), re.MULTILINE
+    )
+    if not m:
         return None
 
-    libs = re.findall(r'-l(\S+)', libs_line.group(1))
+    libs = re.findall(r'-l(\S+)', m.group(1))
     if not libs:
         return None
 
-    find_lines = [f"find_library({lib.upper()}_LIB {lib})" for lib in libs]
-    link_targets = [f"${{{lib.upper()}_LIB}}" for lib in libs]
-
-    return find_lines, link_targets
+    return UsageDirectives(
+        find_package=[f"find_library({lib.upper()}_LIB {lib})" for lib in libs],
+        link_targets=[f"${{{lib.upper()}_LIB}}" for lib in libs],
+    )
 
 
 # ---------------------------------------------------------------------------
-# Idempotency check
+# Normalisation
 # ---------------------------------------------------------------------------
 
 def _normalise(s: str) -> str:
+    """Collapse all whitespace and lowercase for robust presence checks."""
     return re.sub(r'\s+', '', s).lower()
 
 
-def _already_present(content: str, cmake_fragment: str) -> bool:
-    return _normalise(cmake_fragment) in _normalise(content)
-
-
 # ---------------------------------------------------------------------------
-# CMakeLists.txt injection helpers
+# Injection helpers
 # ---------------------------------------------------------------------------
 
 def _inject_find_package(content: str, find_pkg: str) -> str:
     """
-    Inject find_package() after the C++ standard config block so ordering
-    is always: cmake_minimum_required → project → CXX standard → find_package.
+    Inject find_package() after the last existing find_package call
+    to preserve install order. Falls back to anchor strategies when
+    no find_package exists yet.
     """
-    strategies = [
-        # After set(CMAKE_CXX_STANDARD_REQUIRED ON) — ideal position
-        (r'(set\s*\(\s*CMAKE_CXX_STANDARD_REQUIRED\s+ON\s*\))', rf'\1\n\n{find_pkg}'),
-        # After set(CMAKE_CXX_STANDARD ...) — if REQUIRED line absent
-        (r'(set\s*\(\s*CMAKE_CXX_STANDARD\b[^\)]*\))', rf'\1\n\n{find_pkg}'),
-        # After project() — standard grimx scaffold fallback
-        (r'(project\s*\([^\)]*\)(?:\s+\w+\s+\d+)?)', rf'\1\n\n{find_pkg}'),
-        # After cmake_minimum_required
-        (r'(cmake_minimum_required\s*\([^\)]*\))', rf'\1\n\n{find_pkg}'),
-        # Before first add_executable or add_library
-        (r'(add_(?:executable|library)\s*\()', rf'{find_pkg}\n\n\1'),
+    last = None
+    for m in re.finditer(r'find_(?:package|path|library)\s*\(', content, re.IGNORECASE):
+        last = m
+
+    if last:
+        # Walk to end of this call using balanced parens
+        end = _find_call_end(content, last.start())
+        if end != -1:
+            return f"{content[:end]}\n\n{find_pkg}{content[end:]}"
+
+    # No existing find calls — anchor strategies
+    anchors = [
+        r'set\s*\(\s*CMAKE_CXX_STANDARD_REQUIRED\s+ON\s*\)',
+        r'set\s*\(\s*CMAKE_CXX_STANDARD\b[^\)]*\)',
+        r'project\s*\([^\)]*\)',
+        r'cmake_minimum_required\s*\([^\)]*\)',
     ]
+    for pattern in anchors:
+        m = re.search(pattern, content, re.IGNORECASE)
+        if m:
+            end = _find_call_end(content, m.start())
+            pos = end if end != -1 else m.end()
+            return f"{content[:pos]}\n\n{find_pkg}{content[pos:]}"
 
-    for pattern, replacement in strategies:
-        if re.search(pattern, content, re.IGNORECASE):
-            return re.sub(pattern, replacement, content, count=1, flags=re.IGNORECASE)
+    m = re.search(r'add_(?:executable|library)\s*\(', content, re.IGNORECASE)
+    if m:
+        return f"{content[:m.start()]}{find_pkg}\n\n{content[m.start():]}"
 
-    return find_pkg + "\n\n" + content
+    return f"{find_pkg}\n\n{content}"
 
 
 def _inject_link_target(content: str, target: str) -> str:
+    """
+    Append target to existing target_link_libraries block,
+    or create one after add_executable/add_library.
+    """
     tll = re.compile(
         r'(target_link_libraries\(\s*(?:\$\{PROJECT_NAME\}|\w+)\s+'
         r'(?:PRIVATE|PUBLIC|INTERFACE))(.*?)(\))',
         re.DOTALL,
     )
-    match = tll.search(content)
-    if match:
+    m = tll.search(content)
+    if m:
         return tll.sub(rf'\g<1>\g<2> {target}\g<3>', content, count=1)
 
     ae = re.compile(r'(add_(?:executable|library)\([^\)]+\))', re.DOTALL)
@@ -369,4 +400,20 @@ def _inject_link_target(content: str, target: str) -> str:
             content, count=1,
         )
 
-    return content + f"\ntarget_link_libraries(${{PROJECT_NAME}} PRIVATE {target})\n"
+    return f"{content}\ntarget_link_libraries(${{PROJECT_NAME}} PRIVATE {target})\n"
+
+
+def _find_call_end(text: str, start: int) -> int:
+    """
+    Given the start index of a CMake call, return the index just after
+    the matching closing paren. Returns -1 if unmatched.
+    """
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == '(':
+            depth += 1
+        elif text[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
