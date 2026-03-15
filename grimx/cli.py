@@ -45,7 +45,8 @@ def test_cmd():
     """Run tests via CTest."""
     build_mod.run_tests()
 
-@main.command("run")
-def run_cmd():
+@main.command("run", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def run_cmd(args):
     """Run the compiled application."""
-    build_mod.run_app()
+    build_mod.run_app(list(args))
