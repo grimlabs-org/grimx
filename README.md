@@ -24,6 +24,8 @@ cd hello_world
 grimx install fmt
 grimx build
 grimx test
+grimx list
+grimx clean
 grimx run
 ```
 
@@ -39,6 +41,9 @@ grimx run
 | `grimx install` | Restore all dependencies from lock file |
 | `grimx build` | Build the project via CMake |
 | `grimx test` | Run tests via CTest |
+| `grimx list` | List installed locked packages |
+| `grimx clean` | Clean build artifacts |
+| `grimx clean --full` | Clean build and vcpkg_installed artifcats |
 | `grimx run` | Run the compiled application |
 
 ---
