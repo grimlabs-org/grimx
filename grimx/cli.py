@@ -6,6 +6,7 @@ Entry point for the GRIMX command-line interface
 import click 
 from grimx import __version__
 from grimx import scaffold, install as install_mod, build as build_mod 
+from grimx.config import load_lock
 
 @click.group()
 @click.version_option(__version__, prog_name="grimx")
@@ -65,3 +66,32 @@ def clean_cmd(full: bool):
     Use --full to also remove vcpkg_installed/.
     """
     build_mod.clean(full)
+
+@main.command("list")
+def list_cmd():
+    """List all installed dependencies from grimx.lock."""
+    deps: dict = load_lock().get("dependencies", {})
+ 
+    if not deps:
+        click.echo(
+            "\n  No dependencies installed."
+            "\n  Run 'grimx install <package>' to get started.\n"
+        )
+        return
+ 
+    # Dynamic column widths based on content
+    pkg_w = max(len("Package"), max(len(n) for n in deps)) + 2
+    ver_w = max(len("Version"), max(len(str(m.get("version", ""))) for m in deps.values())) + 2
+    mgr_w = max(len("Manager"), max(len(str(m.get("manager", ""))) for m in deps.values())) + 2
+ 
+    click.echo("")
+    click.echo(f"  {'Package':<{pkg_w}}{'Version':<{ver_w}}{'Manager':<{mgr_w}}")
+    click.echo(f"  {'-' * (pkg_w - 2)}  {'-' * (ver_w - 2)}  {'-' * (mgr_w - 2)}")
+ 
+    for name, meta in deps.items():
+        version = meta.get("version", "unknown")
+        manager = meta.get("manager", "unknown")
+        click.echo(f"  {name:<{pkg_w}}{version:<{ver_w}}{manager:<{mgr_w}}")
+ 
+    count = len(deps)
+    click.echo(f"\n  {count} package{'s' if count != 1 else ''} installed\n")
