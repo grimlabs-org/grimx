@@ -68,6 +68,38 @@ def run_app(args: list[str] | None = None) -> None:
     result = subprocess.run([str(binary)] + (args or []))
     raise SystemExit(result.returncode)
 
+def clean(full: bool = False) -> None:
+    """
+    Remove build artifcats.
+    
+    By default removes the build/ directory only.
+    With --full also removes vcpkg_installed/.
+    """
+    _guard_project_root()
+
+    removed_any = False
+
+    build_path = _build_path()
+    if build_path.exists():
+        shutil.rmtree(build_path)
+        click.echo(f"  ✓ removed {build_path}")
+        removed_any = True
+    else:
+        click.echo("  build/ not found — nothing to clean")
+
+    if full:
+        vcpkg_installed = Path.cwd() / "vcpkg_installed"
+        if vcpkg_installed.exists():
+            shutil.rmtree(vcpkg_installed)
+            click.echo(f"  ✓ removed {vcpkg_installed}")
+            removed_any = True
+        else:
+            click.echo("  vcpkg_installed/ not found — nothing to clean")
+    
+    if removed_any:
+        click.echo("✓ clean complete")
+
+
 
 # ---------------------------------------------------------------------------
 # Internal

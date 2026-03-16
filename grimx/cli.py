@@ -50,3 +50,18 @@ def test_cmd():
 def run_cmd(args):
     """Run the compiled application."""
     build_mod.run_app(list(args))
+
+@main.command("clean")
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Also remove vcpkg_installed/ in addition to build/.",
+)
+def clean_cmd(full: bool):
+    """Remove build artifacts.
+    
+    By default remove the build/directory.
+    Use --full to also remove vcpkg_installed/.
+    """
+    build_mod.clean(full)
