@@ -95,3 +95,9 @@ def list_cmd():
  
     count = len(deps)
     click.echo(f"\n  {count} package{'s' if count != 1 else ''} installed\n")
+
+@main.command("doctor")
+def doctor_cmd():
+    """Diagnose the development environment and project health."""
+    from grimx import doctor 
+    doctor.run()
