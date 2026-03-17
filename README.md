@@ -26,6 +26,7 @@ grimx build
 grimx test
 grimx list
 grimx clean
+grimx doctor
 grimx run
 ```
 
@@ -45,6 +46,8 @@ grimx run
 | `grimx clean` | Clean build artifacts |
 | `grimx clean --full` | Clean build and vcpkg_installed artifcats |
 | `grimx run` | Run the compiled application |
+| `grimx run -- <args>` | Run the application with arguments |
+| `grimx doctor` | Diagnose the development environment |
 
 ---
 
