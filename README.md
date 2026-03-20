@@ -28,6 +28,7 @@ grimx list
 grimx clean
 grimx doctor
 grimx run
+grimx remove fmt
 ```
 
 ---
@@ -40,6 +41,7 @@ grimx run
 | `grimx new <name> --type c` | Scaffold a C project (default: cpp) |
 | `grimx install <pkg>` | Install a dependency |
 | `grimx install` | Restore all dependencies from lock file |
+| `grimx remove <pkg>` | Remove a dependency |
 | `grimx build` | Build the project via CMake |
 | `grimx test` | Run tests via CTest |
 | `grimx list` | List installed locked packages |
