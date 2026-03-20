@@ -74,6 +74,12 @@ def add_dependency(
     lock["dependencies"][name] = entry
     write_lock(lock, root)
 
+def remove_dependency(name: str, root: Path | None = None) -> None:
+    """Remove a dependency entry from grimx.lock."""
+    lock = load_lock(root)
+    if "dependencies" in lock and name in lock["dependencies"]:
+        del lock["dependencies"][name]
+    write_lock(lock, root)
 
 # ---------------------------------------------------------------------------
 # Internal

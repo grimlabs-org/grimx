@@ -36,6 +36,12 @@ def install_cmd(package):
     """Install a dependency, or restore all from grimx.lock."""
     install_mod.run(package)
 
+@main.command("remove")
+@click.argument("package")
+def remove_cmd(package):
+    """Remove a dependency and reverse its CMakeLists.txt patch."""
+    install_mod.remove(package)
+
 @main.command("build")
 def build_cmd():
     """Build the project via CMake."""

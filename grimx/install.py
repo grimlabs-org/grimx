@@ -16,9 +16,13 @@ from pathlib import Path
 
 import click
 
-from grimx.config import load_config, load_lock, add_dependency
-from grimx.cmake_patch import patch_from_vcpkg_output, patch_all_from_lock
-
+from grimx.config import load_config, load_lock, add_dependency, remove_dependency
+from grimx.cmake_patch import (
+    patch_from_vcpkg_output,
+    patch_all_from_lock,
+    unpatch_package,
+    _resolve_directives,
+)
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -30,6 +34,47 @@ def run(package: str | None) -> None:
     else:
         _restore_from_lock()
 
+def remove(package: str) -> None:
+    """
+    Remove a package: update lock, regenerate vcpkg.json, reconcile
+    vcpkg_installed/, and reverse the CMakeLists.txt patch.
+    """
+    lock = load_lock()
+    deps = lock.get("dependencies", {})
+ 
+    if package not in deps:
+        click.echo(f"error: '{package}' is not installed.", err=True)
+        raise SystemExit(1)
+ 
+    manager = deps[package].get("manager", "vcpkg")
+ 
+    # Resolve cmake directives NOW — before vcpkg_installed/ is mutated.
+    # After reconcile the package share dir is gone and resolution returns None.
+    cmake_path   = Path.cwd() / "CMakeLists.txt"
+    project_root = Path.cwd()
+    pre_resolved = _resolve_directives(package, project_root)
+ 
+    remove_dependency(package)
+    click.echo(f"  ✓ grimx.lock updated")
+ 
+    if manager == "vcpkg":
+        remaining_vcpkg = {
+            k: v for k, v in deps.items()
+            if k != package and v.get("manager") == "vcpkg"
+        }
+ 
+        if remaining_vcpkg:
+            _sync_vcpkg_manifest()
+            click.echo("  ✓ vcpkg.json updated")
+            _vcpkg_reconcile()
+        else:
+            vcpkg_json = Path.cwd() / "vcpkg.json"
+            if vcpkg_json.exists():
+                vcpkg_json.unlink()
+                click.echo("  ✓ vcpkg.json removed (no remaining vcpkg dependencies)")
+ 
+    unpatch_package(package, cmake_path, directives=pre_resolved)
+    click.echo(f"\n✓ '{package}' removed")
 
 # ---------------------------------------------------------------------------
 # Install / restore
@@ -159,6 +204,32 @@ def _restore_vcpkg(deps: dict) -> tuple[bool, str]:
 
     click.echo("  ✓ all vcpkg dependencies restored")
     return True, result.stdout + result.stderr
+
+def _vcpkg_reconcile() -> bool:
+    """
+    Run vcpkg install against the already-updated vcpkg.json to sync
+    vcpkg_installed/ after a package removal. No lock reading, no cmake
+    patching — vcpkg.json is the sole input.
+    Returns True on success.
+    """
+    install_root = Path.cwd() / "vcpkg_installed"
+    result = subprocess.run(
+        [_vcpkg_bin(), "install", f"--x-install-root={install_root}"],
+        capture_output=True, text=True,
+    )
+ 
+    if result.stdout:
+        click.echo(result.stdout, nl=False)
+    if result.stderr:
+        click.echo(result.stderr, nl=False)
+ 
+    if result.returncode != 0:
+        click.echo("  warning: vcpkg reconcile failed — vcpkg_installed/ may be stale.", err=True)
+        return False
+ 
+    click.echo("  ✓ vcpkg_installed/ reconciled")
+    return True
+    
 
 
 def _sync_vcpkg_manifest() -> bool:

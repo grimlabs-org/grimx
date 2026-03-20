@@ -47,12 +47,6 @@ def parse_vcpkg_output_hints(output: str) -> dict[str, UsageDirectives]:
     """
     Parse ALL CMake hints from vcpkg install stdout in one pass.
     Returns {package_name: UsageDirectives} for every package mentioned.
-
-    vcpkg prints hints for every package in the manifest after each install.
-    This gives the complete picture in one shot — no filesystem access needed.
-
-    Uses section splitting + balanced-paren call extraction so formatting
-    variations and indentation don't affect correctness.
     """
     results: dict[str, UsageDirectives] = {}
 
@@ -62,7 +56,6 @@ def parse_vcpkg_output_hints(output: str) -> dict[str, UsageDirectives]:
     )
 
     sections = section_re.split(output)
-    # sections = [preamble, pkg1, pkg1_content, pkg2, pkg2_content, ...]
 
     i = 1
     while i < len(sections) - 1:
@@ -70,7 +63,6 @@ def parse_vcpkg_output_hints(output: str) -> dict[str, UsageDirectives]:
         content  = sections[i + 1]
         i += 2
 
-        # Stop at next non-cmake block ("provides pkg-config modules:" etc.)
         content = re.split(r'\n\S.*provides\s', content)[0]
 
         d = UsageDirectives()
@@ -81,7 +73,6 @@ def parse_vcpkg_output_hints(output: str) -> dict[str, UsageDirectives]:
             if not lines:
                 continue
 
-            # Alternative block = any comment line containing the word "or"
             is_alternative = any(
                 l.strip().startswith("#") and
                 re.search(r'\bor\b', l, re.IGNORECASE)
@@ -185,6 +176,161 @@ def patch_all_from_lock(lock: dict, cmake_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Unpatch — reverse cmake patch for a removed package
+# ---------------------------------------------------------------------------
+
+def unpatch_package(
+    package: str,
+    cmake_path: Path,
+    directives: UsageDirectives | None = None,
+) -> None:
+    """
+    Remove CMake directives for a package from CMakeLists.txt.
+    Called after grimx remove <package>.
+
+    Accepts pre-resolved directives so the caller can resolve them before
+    vcpkg_installed/ is mutated by reconcile. Falls back to filesystem
+    resolution if directives are not provided.
+
+    Removes find_package/find_path lines and link targets in one pass.
+    If a target_link_libraries call is left empty after removal, the entire
+    call is removed. Collapses any resulting triple blank lines to double.
+    """
+    if not cmake_path.exists():
+        return
+
+    if directives is None:
+        project_root = cmake_path.parent
+        directives   = _resolve_directives(package, project_root)
+
+    if directives is None:
+        click.echo(f"  [cmake] no directives found for '{package}' — nothing to remove.")
+        return
+
+    content     = cmake_path.read_text()
+    original    = content
+    any_changed = False
+
+    # --- Remove find_package / find_path lines (all occurrences) ---
+    for line in directives.find_package + directives.find_path_lines:
+        norm_line = _normalise(line)
+        # Keep removing while it still exists (handles manual duplicates)
+        while norm_line in _normalise(content):
+            content, removed = _remove_cmake_call(content, line)
+            if removed:
+                any_changed = True
+
+    # --- Remove link targets from all target_link_libraries calls ---
+    for target in directives.link_targets:
+        content, changed = _remove_link_target(content, target)
+        if changed:
+            any_changed = True
+
+    if not any_changed:
+        click.echo(f"  [cmake] '{package}' directives not found in CMakeLists.txt — nothing to remove.")
+        return
+
+    # Collapse triple+ blank lines to double
+    content = re.sub(r'\n{3,}', '\n\n', content)
+
+    _atomic_write(cmake_path, content)
+    click.echo(f"  [cmake] ✓ removed '{package}' directives from CMakeLists.txt.")
+
+
+def _remove_cmake_call(content: str, call: str) -> tuple[str, bool]:
+    """
+    Remove a single CMake call from content by matching normalised form.
+    Also strips one surrounding blank line to avoid accumulating whitespace.
+    Returns (new_content, changed).
+    """
+    norm_target = _normalise(call)
+
+    # Walk through all top-level calls and find the matching one by position
+    call_re = re.compile(r'[A-Za-z_]\w*\s*\(')
+    i = 0
+    while i < len(content):
+        m = call_re.search(content, i)
+        if not m:
+            break
+
+        # Skip commented calls
+        line_start = content.rfind('\n', 0, m.start()) + 1
+        if '#' in content[line_start:m.start()]:
+            i = m.end()
+            continue
+
+        end = _find_call_end(content, m.start())
+        if end == -1:
+            i = m.end()
+            continue
+
+        candidate = content[m.start():end]
+        if _normalise(candidate) == norm_target:
+            # Expand removal to include one leading blank line if present
+            remove_start = m.start()
+            if remove_start >= 2 and content[remove_start - 2:remove_start] == '\n\n':
+                remove_start -= 1
+            return content[:remove_start] + content[end:], True
+
+        i = end
+
+    return content, False
+
+
+def _remove_link_target(content: str, target: str) -> tuple[str, bool]:
+    """
+    Remove a single target token from every target_link_libraries call.
+    Uses string slicing throughout — no re.sub replacement strings — so
+    targets containing ${VAR} are handled safely.
+
+    If a call is left with no targets after removal, the entire call is
+    removed (including one surrounding blank line).
+    """
+    tll_re = re.compile(
+        r'target_link_libraries\s*\(\s*'
+        r'(?:\$\{[^}]+\}|\w+)\s+'          # target name (variable or plain)
+        r'(PRIVATE|PUBLIC|INTERFACE)\s+'    # visibility keyword
+        r'(.*?)\s*\)',                       # targets list
+        re.DOTALL,
+    )
+
+    changed  = False
+    result   = content
+    offset   = 0
+
+    for m in tll_re.finditer(content):
+        visibility = m.group(1)
+        targets_str = m.group(2)
+        tokens = targets_str.split()
+
+        if target not in tokens:
+            continue
+
+        tokens.remove(target)
+        changed = True
+
+        if tokens:
+            # Rebuild call with target removed — slice-based, no re.sub
+            new_targets = ' '.join(tokens)
+            # Reconstruct: everything up to visibility keyword + new targets + )
+            vis_start = m.start(1) + offset
+            close_pos = m.end() - 1 + offset   # position of closing )
+            result = result[:vis_start] + visibility + ' ' + new_targets + result[close_pos:]
+            offset += len(visibility + ' ' + new_targets) - (close_pos - vis_start)
+        else:
+            # No targets left — remove the entire call
+            abs_start = m.start() + offset
+            abs_end   = m.end() + offset
+            # Also remove one preceding blank line if present
+            if abs_start >= 2 and result[abs_start - 2:abs_start] == '\n\n':
+                abs_start -= 1
+            result = result[:abs_start] + result[abs_end:]
+            offset -= (abs_end - abs_start)
+
+    return result, changed
+
+
+# ---------------------------------------------------------------------------
 # Apply directives
 # ---------------------------------------------------------------------------
 
@@ -266,15 +412,15 @@ _ALTERNATIVE_RE = re.compile(r'#\s*or\b', re.IGNORECASE)
 
 
 def _parse_usage_file(content: str) -> UsageDirectives:
-    """
-    Parse a vcpkg usage file using block splitting + balanced-paren extraction.
-    Skips alternative blocks (header-only variants etc.) marked with '# or'.
-    """
-    d      = UsageDirectives()
-    blocks = re.split(r'\n\s*\n', content.strip())
+    d = UsageDirectives()
+
+    # Split on blank lines AND on inline '# Or' comment lines so that
+    # alternative blocks (e.g. header-only variants) never poison the
+    # primary block — mirrors the logic in parse_vcpkg_output_hints.
+    blocks = re.split(r'\n\s*\n|(?=\n\s*#\s*[Oo]r\b)', content.strip())
 
     for block in blocks:
-        lines        = block.splitlines()
+        lines          = block.splitlines()
         is_alternative = any(_ALTERNATIVE_RE.search(l) for l in lines)
 
         for call in _extract_cmake_calls(block):
@@ -306,17 +452,6 @@ def _parse_usage_file(content: str) -> UsageDirectives:
 def _query_cmake_targets(
     package: str, project_root: Path
 ) -> UsageDirectives | None:
-    """
-    Run a minimal CMake script that calls find_package() and reports every
-    IMPORTED target it created. CMake resolves *Config.cmake, *Export.cmake,
-    *Targets.cmake, and built-in Find modules internally.
-
-    This is the only approach guaranteed to work for every package regardless
-    of whether it ships a usage file or how its cmake files are structured.
-
-    Only runs when Layer 1 fails — typically adds 1-2 seconds per package
-    that has no usage file.
-    """
     vcpkg_installed = project_root / "vcpkg_installed"
     if not vcpkg_installed.exists():
         return None
@@ -327,7 +462,6 @@ def _query_cmake_targets(
 
     prefix = triplet_dirs[0]
 
-    # CMake script: find the package, report every IMPORTED target created
     cmake_script = f'''\
 cmake_minimum_required(VERSION 3.20)
 project(grimx_probe LANGUAGES NONE)
@@ -368,9 +502,9 @@ endif()
             capture_output=True, text=True,
         )
 
-        combined   = result.stdout + result.stderr
+        combined    = result.stdout + result.stderr
         all_targets: list[str] = []
-        mode       = "CONFIG"
+        mode        = "CONFIG"
 
         for line in combined.splitlines():
             if "GRIMX_TARGET:" in line:
@@ -384,30 +518,25 @@ endif()
         if not all_targets:
             return None
 
-        # Filter to targets that plausibly belong to this package
-        pkg_key = package.lower().replace("-", "").replace("_", "")
+        pkg_key  = package.lower().replace("-", "").replace("_", "")
         relevant = [
             t for t in all_targets
             if pkg_key in t.lower().replace("::", "").replace("_", "").replace("-", "")
         ]
-
-        # Fall back to all targets if filter was too aggressive
         final_targets = relevant if relevant else all_targets
 
-        # Prefer namespaced targets (Foo::Bar)
         ns = [t for t in final_targets if "::" in t]
         final_targets = ns if ns else final_targets
-
-        # Deduplicate preserving order
         final_targets = list(dict.fromkeys(final_targets))
 
         if not final_targets:
             return None
 
-        if mode == "CONFIG":
-            find_pkg = f"find_package({package} CONFIG REQUIRED)"
-        else:
-            find_pkg = f"find_package({package} REQUIRED)"
+        find_pkg = (
+            f"find_package({package} CONFIG REQUIRED)"
+            if mode == "CONFIG"
+            else f"find_package({package} REQUIRED)"
+        )
 
         return UsageDirectives(
             find_package=[find_pkg],
@@ -454,11 +583,6 @@ def _parse_pkgconfig(
 # ---------------------------------------------------------------------------
 
 def _extract_cmake_calls(text: str) -> list[str]:
-    """
-    Extract complete CMake function calls using balanced-paren matching.
-    Handles single-line, multi-line, indented, and COMPONENTS calls correctly.
-    Skips commented-out lines.
-    """
     calls      = []
     i          = 0
     call_start = re.compile(r'[A-Za-z_]\w*\s*\(')
@@ -507,10 +631,6 @@ def _normalise(s: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _inject_find_package(content: str, find_pkg: str) -> str:
-    """
-    Inject find_package() after the last existing find_package call
-    to preserve install order. Falls back to anchor strategies.
-    """
     last = None
     for m in re.finditer(
         r'find_(?:package|path|library)\s*\(', content, re.IGNORECASE
@@ -543,11 +663,6 @@ def _inject_find_package(content: str, find_pkg: str) -> str:
 
 
 def _inject_link_target(content: str, target: str) -> str:
-    """
-    Append target to existing target_link_libraries block,
-    or create one after add_executable/add_library.
-    Uses string slicing to avoid $ in target names corrupting re.sub.
-    """
     tll = re.compile(
         r'(target_link_libraries\(\s*(?:\$\{PROJECT_NAME\}|\w+)\s+'
         r'(?:PRIVATE|PUBLIC|INTERFACE))(.*?)(\))',
