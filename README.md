@@ -1,5 +1,4 @@
 # GRIMX
-
 **GCC Runtime & Installation Manager - Cross Platform**
 
 A minimal developer tool for reproducible C and C++ environments.
@@ -25,6 +24,8 @@ grimx install fmt
 grimx build
 grimx test
 grimx list
+grimx sync
+grimx upgrade fmt
 grimx clean
 grimx doctor
 grimx run
@@ -42,11 +43,13 @@ grimx remove fmt
 | `grimx install <pkg>` | Install a dependency |
 | `grimx install` | Restore all dependencies from lock file |
 | `grimx remove <pkg>` | Remove a dependency |
+| `grimx upgrade <pkg>` | Upgrade a dependency to its latest version |
+| `grimx sync` | Sync CMakeLists.txt with source files in src/ and include/ |
 | `grimx build` | Build the project via CMake |
 | `grimx test` | Run tests via CTest |
 | `grimx list` | List installed locked packages |
 | `grimx clean` | Clean build artifacts |
-| `grimx clean --full` | Clean build and vcpkg_installed artifcats |
+| `grimx clean --full` | Clean build and vcpkg_installed artifacts |
 | `grimx run` | Run the compiled application |
 | `grimx run -- <args>` | Run the application with arguments |
 | `grimx doctor` | Diagnose the development environment |
