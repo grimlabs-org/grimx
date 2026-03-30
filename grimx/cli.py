@@ -2,6 +2,7 @@
 grimx.cli
 Entry point for the GRIMX command-line interface
 """
+from pathlib import Path
 
 import click 
 from grimx import __version__
@@ -41,6 +42,19 @@ def install_cmd(package):
 def remove_cmd(package):
     """Remove a dependency and reverse its CMakeLists.txt patch."""
     install_mod.remove(package)
+
+@main.command("upgrade")
+@click.argument("package")
+def upgrade_cmd(package):
+    """Upgrade a dependency to its latest available version."""
+    install_mod.upgrade(package)
+
+@main.commnad("sync")
+def sync_cmd():
+    """Sync CMakeLists.txt with source files found in src/ and include/."""
+    from grimx.cmake_patch import sync_sources 
+    sync_sources(Path.cwd() / "CMakeLists.txt")
+    
 
 @main.command("build")
 def build_cmd():
@@ -107,3 +121,7 @@ def doctor_cmd():
     """Diagnose the development environment and project health."""
     from grimx import doctor 
     doctor.run()
+
+
+
+
