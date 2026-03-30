@@ -176,6 +176,139 @@ def patch_all_from_lock(lock: dict, cmake_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sync — update add_executable and target_include_directories from disk
+# ---------------------------------------------------------------------------
+
+def sync_sources(cmake_path: Path) -> None:
+    """
+    Scan src/ and include/ and sync CMakeLists.txt to match.
+
+    - Adds any .c/.cpp files found in src/ that are missing from
+      add_executable(...)
+    - Adds target_include_directories(...PRIVATE include) if include/ exists
+      and is not already referenced
+
+    Idempotent — safe to run multiple times. Atomic write.
+    """
+    if not cmake_path.exists():
+        click.echo("  [sync] CMakeLists.txt not found.", err=True)
+        return
+
+    project_root = cmake_path.parent
+    src_dir      = project_root / "src"
+    include_dir  = project_root / "include"
+
+    # --- Discover source files ---
+    src_extensions = {".c", ".cpp", ".cc", ".cxx"}
+    discovered: list[str] = []
+    if src_dir.exists():
+        discovered = sorted(
+            f.relative_to(project_root).as_posix()
+            for f in src_dir.rglob("*")
+            if f.is_file() and f.suffix in src_extensions
+        )
+
+    content    = cmake_path.read_text()
+    any_changed = False
+
+    # --- Sync add_executable ---
+    if discovered:
+        content, changed = _sync_add_executable(content, discovered)
+        if changed:
+            click.echo(f"  [sync] updated add_executable with {len(discovered)} source(s)")
+            any_changed = True
+
+    # --- Sync target_include_directories ---
+    if include_dir.exists():
+        content, changed = _sync_include_directories(content)
+        if changed:
+            click.echo("  [sync] added target_include_directories PRIVATE include")
+            any_changed = True
+
+    if not any_changed:
+        click.echo("  [sync] CMakeLists.txt already up to date.")
+        return
+
+    # Collapse any triple+ blank lines introduced by edits
+    content = re.sub(r'\n{3,}', '\n\n', content)
+    _atomic_write(cmake_path, content)
+    click.echo("  [sync] ✓ CMakeLists.txt updated.")
+
+
+def _sync_add_executable(content: str, discovered: list[str]) -> tuple[str, bool]:
+    """
+    Add any discovered source files missing from add_executable(...).
+    Handles both single-line and multi-line calls.
+    Uses _extract_cmake_calls + _find_call_end for safe balanced-paren parsing.
+    """
+    # Find the add_executable call
+    ae_re = re.compile(r'add_executable\s*\(', re.IGNORECASE)
+    m     = ae_re.search(content)
+    if not m:
+        return content, False
+
+    end = _find_call_end(content, m.start())
+    if end == -1:
+        return content, False
+
+    call_text = content[m.start():end]
+
+    # Extract tokens inside add_executable(...)
+    # First token after '(' is the target name — skip it
+    inner = call_text[call_text.index('(') + 1 : -1].strip()
+    tokens = inner.split()
+    if not tokens:
+        return content, False
+
+    # target name is always first token
+    existing_sources = set(tokens[1:])
+    norm_existing    = {_normalise(s) for s in existing_sources}
+
+    missing = [
+        src for src in discovered
+        if _normalise(src) not in norm_existing
+    ]
+    if not missing:
+        return content, False
+
+    # Append missing sources before the closing paren — string slice only
+    new_sources_str = "\n    " + "\n    ".join(missing)
+    new_call        = call_text[:-1] + new_sources_str + "\n)"
+    return content[:m.start()] + new_call + content[end:], True
+
+
+def _sync_include_directories(content: str) -> tuple[str, bool]:
+    """
+    Ensure target_include_directories(... PRIVATE include) is present.
+    If a target_include_directories call already exists and contains
+    'include', skip. Otherwise create one after add_executable.
+    """
+    norm = _normalise(content)
+
+    # Already has an include dir referencing 'include' path
+    if 'target_include_directories' in norm and _normalise('include') in norm:
+        # More precise: check the actual call contains 'include' as a token
+        tid_re = re.compile(r'target_include_directories\s*\(.*?\)', re.DOTALL | re.IGNORECASE)
+        for m in tid_re.finditer(content):
+            tokens = m.group().split()
+            if any(t.strip('()') == 'include' for t in tokens):
+                return content, False
+
+    new_line = "target_include_directories(${PROJECT_NAME} PRIVATE include)"
+
+    # Inject after add_executable call
+    ae_re = re.compile(r'add_executable\s*\(', re.IGNORECASE)
+    m     = ae_re.search(content)
+    if m:
+        end = _find_call_end(content, m.start())
+        if end != -1:
+            return content[:end] + "\n\n" + new_line + content[end:], True
+
+    # Fallback: append at end
+    return content.rstrip() + "\n\n" + new_line + "\n", True
+
+
+# ---------------------------------------------------------------------------
 # Unpatch — reverse cmake patch for a removed package
 # ---------------------------------------------------------------------------
 

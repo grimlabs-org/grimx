@@ -24,6 +24,7 @@ from grimx.cmake_patch import (
     _resolve_directives,
 )
 
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ def run(package: str | None) -> None:
     else:
         _restore_from_lock()
 
+
 def remove(package: str) -> None:
     """
     Remove a package: update lock, regenerate vcpkg.json, reconcile
@@ -41,40 +43,91 @@ def remove(package: str) -> None:
     """
     lock = load_lock()
     deps = lock.get("dependencies", {})
- 
+
     if package not in deps:
         click.echo(f"error: '{package}' is not installed.", err=True)
         raise SystemExit(1)
- 
+
     manager = deps[package].get("manager", "vcpkg")
- 
+
     # Resolve cmake directives NOW — before vcpkg_installed/ is mutated.
     # After reconcile the package share dir is gone and resolution returns None.
     cmake_path   = Path.cwd() / "CMakeLists.txt"
     project_root = Path.cwd()
     pre_resolved = _resolve_directives(package, project_root)
- 
+
     remove_dependency(package)
     click.echo(f"  ✓ grimx.lock updated")
- 
+
     if manager == "vcpkg":
         remaining_vcpkg = {
             k: v for k, v in deps.items()
             if k != package and v.get("manager") == "vcpkg"
         }
- 
+
         if remaining_vcpkg:
             _sync_vcpkg_manifest()
             click.echo("  ✓ vcpkg.json updated")
-            _vcpkg_reconcile()
+            _vcpkg_reconcile()  # output not needed for remove
         else:
             vcpkg_json = Path.cwd() / "vcpkg.json"
             if vcpkg_json.exists():
                 vcpkg_json.unlink()
                 click.echo("  ✓ vcpkg.json removed (no remaining vcpkg dependencies)")
- 
+
     unpatch_package(package, cmake_path, directives=pre_resolved)
     click.echo(f"\n✓ '{package}' removed")
+
+
+def upgrade(package: str) -> None:
+    """
+    Upgrade a package to its latest available version.
+    Updates grimx.lock, vcpkg.json, vcpkg_installed/, and CMakeLists.txt.
+    """
+    lock = load_lock()
+    deps = lock.get("dependencies", {})
+
+    if package not in deps:
+        click.echo(f"error: '{package}' is not installed.", err=True)
+        raise SystemExit(1)
+
+    manager         = deps[package].get("manager", "vcpkg")
+    current_version = deps[package].get("version", "unknown")
+
+    if manager != "vcpkg":
+        click.echo(f"error: upgrade only supports vcpkg packages currently.", err=True)
+        raise SystemExit(1)
+
+    latest = _vcpkg_latest_version(package)
+    if latest is None:
+        click.echo(f"error: could not determine latest version for '{package}'.", err=True)
+        raise SystemExit(1)
+
+    if latest == current_version:
+        click.echo(f"  '{package}' is already at the latest version ({current_version}).")
+        return
+
+    click.echo(f"  upgrading {package}: {current_version} → {latest}")
+
+    # Update lock with new version then regenerate vcpkg.json
+    add_dependency(package, manager, latest)
+    click.echo("  ✓ grimx.lock updated")
+
+    _sync_vcpkg_manifest()
+    click.echo("  ✓ vcpkg.json updated")
+
+    ok, output = _vcpkg_reconcile()
+    if not ok:
+        # Roll back lock to previous version on failure
+        add_dependency(package, manager, current_version)
+        click.echo("  rolled back grimx.lock to previous version.", err=True)
+        raise SystemExit(1)
+
+    # CMake directives don't change between versions — idempotency check
+    # in patch_from_vcpkg_output means this is a safe no-op if already present.
+    patch_from_vcpkg_output(output, Path.cwd() / "CMakeLists.txt")
+    click.echo(f"\n✓ '{package}' upgraded to {latest}")
+
 
 # ---------------------------------------------------------------------------
 # Install / restore
@@ -106,9 +159,6 @@ def _install_package(package: str) -> None:
             if manager == "vcpkg":
                 _sync_vcpkg_manifest()
                 click.echo(f"  ✓ vcpkg.json updated")
-                # Primary path — parse cmake hints from vcpkg stdout.
-                # vcpkg prints hints for every installed package so this
-                # covers all packages in the manifest in one pass.
                 patch_from_vcpkg_output(vcpkg_output, Path.cwd() / "CMakeLists.txt")
             else:
                 patch_all_from_lock(load_lock(), Path.cwd() / "CMakeLists.txt")
@@ -205,31 +255,30 @@ def _restore_vcpkg(deps: dict) -> tuple[bool, str]:
     click.echo("  ✓ all vcpkg dependencies restored")
     return True, result.stdout + result.stderr
 
-def _vcpkg_reconcile() -> bool:
+
+def _vcpkg_reconcile() -> tuple[bool, str]:
     """
     Run vcpkg install against the already-updated vcpkg.json to sync
-    vcpkg_installed/ after a package removal. No lock reading, no cmake
-    patching — vcpkg.json is the sole input.
-    Returns True on success.
+    vcpkg_installed/. No lock reading, no cmake patching — vcpkg.json is
+    the sole input. Returns (success, combined_output).
     """
     install_root = Path.cwd() / "vcpkg_installed"
     result = subprocess.run(
         [_vcpkg_bin(), "install", f"--x-install-root={install_root}"],
         capture_output=True, text=True,
     )
- 
+
     if result.stdout:
         click.echo(result.stdout, nl=False)
     if result.stderr:
         click.echo(result.stderr, nl=False)
- 
+
     if result.returncode != 0:
         click.echo("  warning: vcpkg reconcile failed — vcpkg_installed/ may be stale.", err=True)
-        return False
- 
+        return False, ""
+
     click.echo("  ✓ vcpkg_installed/ reconciled")
-    return True
-    
+    return True, result.stdout + result.stderr
 
 
 def _sync_vcpkg_manifest() -> bool:
@@ -514,3 +563,24 @@ def _parse_conan_version(output: str, package: str) -> str:
         if "/" in line and base.lower() in line.lower():
             return line.strip().split("/")[-1].split("@")[0]
     return "unknown"
+
+
+def _vcpkg_latest_version(package: str) -> str | None:
+    """
+    Query vcpkg for the latest available version of a package.
+    Parses plain-text output of 'vcpkg search <package>'.
+    Returns version string or None if not found.
+    """
+    result = subprocess.run(
+        [_vcpkg_bin(), "search", package],
+        capture_output=True, text=True,
+    )
+
+    for line in result.stdout.splitlines():
+        tokens = line.split()
+        # Match exact package name in first token to avoid partial matches
+        # e.g. "fmt" must not match "fmt-header-only" or "spdlog[fmt]"
+        if tokens and tokens[0].lower() == package.lower() and len(tokens) >= 2:
+            return tokens[1]
+
+    return None
