@@ -265,6 +265,9 @@ def _write_starter_test(dest: Path, project_type: str, framework: str) -> None:
         )
     elif framework == "doctest":
         outfile.write_text(
+            '// doctest::doctest is header-only and ships no main(); exactly one\n'
+            '// translation unit must define this to emit the implementation.\n'
+            '#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN\n'
             '#include <doctest/doctest.h>\n\n'
             'TEST_CASE("placeholder") {\n'
             '    CHECK(1 + 1 == 2);\n'
