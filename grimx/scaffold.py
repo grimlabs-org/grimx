@@ -26,7 +26,13 @@ C_STANDARDS    = ["11", "17", "99"]
 MANAGERS       = ["vcpkg", "conan", "both", "none"]
 
 CPP_TEST_FRAMEWORKS = ["catch2", "doctest", "googletest", "none"]
-C_TEST_FRAMEWORKS   = ["unity", "cmocka", "none"]
+C_TEST_FRAMEWORKS   = ["cmocka", "none"]
+
+# A framework's menu name is not always its vcpkg port name — googletest ships
+# as the 'gtest' port. Anything absent here uses its own name as the port.
+TEST_FRAMEWORK_PORTS = {
+    "googletest": "gtest",
+}
 
 
 def create_project(name: str | None, project_type: str | None) -> None:
@@ -140,15 +146,17 @@ def create_project(name: str | None, project_type: str | None) -> None:
     write_config({"package_manager": {"priority": priority}}, root=dest)
     write_lock({"dependencies": {}, "dev_dependencies": {}}, root=dest)
 
+    test_port = TEST_FRAMEWORK_PORTS.get(test_framework, test_framework)
+
     if test_framework != "none" and priority:
-        add_dev_dependency(test_framework, "vcpkg", "unknown", root=dest)
+        add_dev_dependency(test_port, "vcpkg", "unknown", root=dest)
 
     click.echo(f"  ✓ {dest}")
     click.echo("")
 
     if test_framework != "none" and priority:
         click.echo(f"  The following will be installed:")
-        click.echo(f"    {test_framework} (dev dependency, via vcpkg)")
+        click.echo(f"    {test_port} (dev dependency, via vcpkg)")
         click.echo("")
         if click.confirm("  Install now?", default=True):
             import os
@@ -227,17 +235,6 @@ def _write_tests_cmake(dest: Path, name: str, project_type: str, framework: str)
             f")\n"
             f"add_test(NAME {name}_tests COMMAND {name}_tests)\n"
         )
-    elif framework == "unity":
-        tests_cmake.write_text(
-            f"find_package(unity CONFIG REQUIRED)\n\n"
-            f"file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS {glob_ext})\n"
-            f"add_executable({name}_tests ${{TEST_SOURCES}})\n"
-            f"target_link_libraries({name}_tests PRIVATE\n"
-            f"    {name}_core\n"
-            f"    unity\n"
-            f")\n"
-            f"add_test(NAME {name}_tests COMMAND {name}_tests)\n"
-        )
     elif framework == "cmocka":
         tests_cmake.write_text(
             f"find_package(cmocka CONFIG REQUIRED)\n\n"
@@ -278,20 +275,6 @@ def _write_starter_test(dest: Path, project_type: str, framework: str) -> None:
             '#include <gtest/gtest.h>\n\n'
             'TEST(Placeholder, BasicAssertion) {\n'
             '    EXPECT_EQ(1 + 1, 2);\n'
-            '}\n'
-        )
-    elif framework == "unity":
-        outfile.write_text(
-            '#include <unity.h>\n\n'
-            'void setUp(void) {}\n'
-            'void tearDown(void) {}\n\n'
-            'void test_placeholder(void) {\n'
-            '    TEST_ASSERT_EQUAL(2, 1 + 1);\n'
-            '}\n\n'
-            'int main(void) {\n'
-            '    UNITY_BEGIN();\n'
-            '    RUN_TEST(test_placeholder);\n'
-            '    return UNITY_END();\n'
             '}\n'
         )
     elif framework == "cmocka":
