@@ -190,13 +190,26 @@ def sync_sources(cmake_path: Path) -> None:
     content     = cmake_path.read_text()
     any_changed = False
 
-    if discovered:
+    # Projects scaffolded by `grimx new` compile every source through a
+    # file(GLOB_RECURSE ... CONFIGURE_DEPENDS) driven target. Listing those same
+    # files in add_executable() compiles them twice and the link fails with
+    # "multiple definition of `main'". Never add sources to such projects — and
+    # strip any that an earlier sync already added.
+    if _sources_are_globbed(content):
+        content, changed = _prune_duplicate_sources(content, discovered)
+        if changed:
+            click.echo("  [sync] removed duplicate source(s) from add_executable "
+                       "— already compiled via file(GLOB_RECURSE ...)")
+            any_changed = True
+        else:
+            click.echo("  [sync] sources auto-discovered via file(GLOB_RECURSE ...) — nothing to add.")
+    elif discovered:
         content, changed = _sync_add_executable(content, discovered)
         if changed:
             click.echo(f"  [sync] updated add_executable with {len(discovered)} source(s)")
             any_changed = True
 
-    if include_dir.exists():
+    if include_dir.exists() and not _includes_are_globbed(content):
         content, changed = _sync_include_directories(content)
         if changed:
             click.echo("  [sync] added target_include_directories PRIVATE include")
@@ -257,6 +270,146 @@ def _sync_include_directories(content: str) -> tuple[str, bool]:
             return content[:end] + "\n\n" + new_line + content[end:], True
 
     return content.rstrip() + "\n\n" + new_line + "\n", True
+
+
+_SRC_GLOB_EXT_RE = re.compile(r'\*\.(?:c|cc|cpp|cxx)\b', re.IGNORECASE)
+_HDR_GLOB_EXT_RE = re.compile(r'\*\.(?:h|hh|hpp|hxx)\b', re.IGNORECASE)
+
+
+def _glob_vars(content: str, ext_re: re.Pattern) -> set[str]:
+    """Names of variables populated by file(GLOB...) over files matching ext_re."""
+    found: set[str] = set()
+    for m in re.finditer(r'file\s*\(\s*GLOB(?:_RECURSE)?\s+(\w+)', content, re.IGNORECASE):
+        end = _find_call_end(content, m.start())
+        if end != -1 and ext_re.search(content[m.start():end]):
+            found.add(m.group(1))
+    return found
+
+
+def _sources_are_globbed(content: str) -> bool:
+    """True when a target already compiles a file(GLOB...) source list."""
+    src_vars = _glob_vars(content, _SRC_GLOB_EXT_RE)
+    if not src_vars:
+        return False
+
+    for m in re.finditer(r'add_(?:library|executable)\s*\(', content, re.IGNORECASE):
+        end = _find_call_end(content, m.start())
+        if end == -1:
+            continue
+        call = content[m.start():end]
+        if any(f'${{{v}}}' in call for v in src_vars):
+            return True
+
+    return False
+
+
+def _includes_are_globbed(content: str) -> bool:
+    """True when include dirs are derived from a globbed header list."""
+    if not _glob_vars(content, _HDR_GLOB_EXT_RE):
+        return False
+
+    for m in re.finditer(r'target_include_directories\s*\(', content, re.IGNORECASE):
+        end = _find_call_end(content, m.start())
+        if end == -1:
+            continue
+        call = content[m.start():end]
+        vis  = re.search(r'\b(?:PRIVATE|PUBLIC|INTERFACE)\b', call)
+        if vis and re.search(r'\$\{\w+\}', call[vis.end():]):
+            return True
+
+    return False
+
+
+def _glob_exclude_patterns(content: str, var: str) -> list[str]:
+    """Regexes applied to a globbed list via list(FILTER <var> EXCLUDE REGEX ...)."""
+    call_re = re.compile(
+        r'list\s*\(\s*FILTER\s+' + re.escape(var) + r'\s+EXCLUDE\s+REGEX\s+(.+?)\s*\)',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    patterns: list[str] = []
+    for m in call_re.finditer(content):
+        arg = m.group(1).strip()
+        if len(arg) >= 2 and arg[0] == '"' and arg[-1] == '"':
+            arg = arg[1:-1]
+        # CMake quoted arguments escape a literal backslash as '\\'.
+        patterns.append(arg.replace('\\\\', '\\'))
+
+    return patterns
+
+
+def _globbed_source_files(content: str, discovered: list[str]) -> set[str]:
+    """
+    Subset of `discovered` that the CMake source globs actually collect, i.e.
+    after the list(FILTER ... EXCLUDE REGEX ...) calls are applied. A file the
+    glob deliberately drops — typically the app entry point — still belongs in
+    add_executable() and must never be pruned from it.
+    """
+    src_vars = _glob_vars(content, _SRC_GLOB_EXT_RE)
+    if not src_vars:
+        return set()
+
+    excludes: list[str] = []
+    for var in src_vars:
+        excludes.extend(_glob_exclude_patterns(content, var))
+
+    collected: set[str] = set()
+    for rel in discovered:
+        # GLOB_RECURSE yields absolute paths; the leading slash lets patterns
+        # anchored like ".*/src/main\.cpp$" match a repo-relative path.
+        probe = "/" + rel
+        for pattern in excludes:
+            try:
+                if re.search(pattern, probe):
+                    break
+            except re.error:
+                continue
+        else:
+            collected.add(rel)
+
+    return collected
+
+
+def _prune_duplicate_sources(content: str, discovered: list[str]) -> tuple[str, bool]:
+    """
+    Drop explicitly listed sources from add_executable() when the same files are
+    already compiled through a globbed target — they would otherwise be compiled
+    twice and break the link with duplicate symbols.
+    """
+    globbed = _globbed_source_files(content, discovered)
+    if not globbed:
+        return content, False
+
+    dupes       = {_normalise(s) for s in globbed}
+    ae_re       = re.compile(r'add_executable\s*\(', re.IGNORECASE)
+    any_changed = False
+    pos         = 0
+
+    while True:
+        m = ae_re.search(content, pos)
+        if not m:
+            break
+
+        end = _find_call_end(content, m.start())
+        if end == -1:
+            pos = m.end()
+            continue
+
+        call   = content[m.start():end]
+        tokens = call[call.index('(') + 1:-1].split()
+
+        if len(tokens) > 1:
+            kept = [tokens[0]] + [t for t in tokens[1:] if _normalise(t) not in dupes]
+            if len(kept) != len(tokens):
+                new_call    = f"add_executable({' '.join(kept)})"
+                content     = content[:m.start()] + new_call + content[end:]
+                any_changed = True
+                pos         = m.start() + len(new_call)
+                continue
+
+        pos = end
+
+    return content, any_changed
 
 
 def unpatch_package(
